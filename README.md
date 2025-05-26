@@ -1,9 +1,6 @@
 UP113 Labs
 ===========
 
-:::info
-The online chat room is on discord. Please join the server via the [[invitation link]](https://discord.gg/RUbAsM2Gqs).
-:::
 
 :::success
 **Grading Policy**
