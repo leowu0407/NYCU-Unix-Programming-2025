@@ -32,7 +32,7 @@ code_logic_marker:
     lea rsi, [rbp + 6]
     mov rdx, 64
 
-read_loop:
+read:
     mov rax, 0
     syscall
 
