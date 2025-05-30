@@ -191,12 +191,7 @@ public:
             else { 
                 // Defensive check: if program terminated unexpectedly and not caught by handle_wait_status before prompt
                 if (child_pid_ == -1 && (WIFEXITED(status_) || WIFSIGNALED(status_))) {
-                    // This state should ideally be set by handle_wait_status.
-                    // If program_loaded_ is true but child_pid_ is -1, it means termination happened.
-                    // The message would have been printed by handle_wait_status.
-                    // Resetting program_loaded_ here ensures the next prompt reflects this.
-                     program_loaded_ = false; // Ensure prompt reflects termination
-                     // No message here, as handle_wait_status should have printed it.
+                     program_loaded_ = false; 
                      continue;
                 }
 
@@ -254,12 +249,11 @@ public:
     // Terminates the currently loaded program and resets debugger state
     void kill_program() {
         if (child_pid_ > 0) {
-            // Best-effort attempt to restore original bytes at breakpoint locations
             if (program_loaded_) { 
                 for (auto const& [addr, original_data_word_snapshot] : breakpoints_map_) {
                     if (child_pid_ <=0) break; 
                     errno = 0;
-                    long current_word_in_mem = peek_text(addr); // Read current memory (might have 0xCC)
+                    long current_word_in_mem = peek_text(addr); 
                     if (errno == 0 && (current_word_in_mem & 0xFF) == 0xCC) { 
                         unsigned char original_first_byte = (unsigned char)(original_data_word_snapshot & 0xFFL);
                         long word_to_restore = (current_word_in_mem & ~0xFFL) | original_first_byte;
@@ -276,25 +270,22 @@ public:
                  waitpid(child_pid_, nullptr, 0); 
             }
         }
-        // Reset all state variables
         child_pid_ = -1; program_loaded_ = false; 
         current_program_path_.clear(); user_program_path_display_.clear();
         entry_point_from_elf_ = 0; actual_loaded_entry_point_ = 0; base_address_ = 0; load_offset_ = 0;
         text_segment_elf_va_ = 0; text_segment_size_ = 0; text_segment_start_ = 0;
         was_stopped_at_breakpoint_addr_ = 0; status_ = 0;
         breakpoints_map_.clear(); breakpoint_id_to_addr_.clear(); next_breakpoint_id_ = 0;
-        executable_regions_.clear(); in_syscall_entry_ = true; // Reset for next load
+        executable_regions_.clear(); in_syscall_entry_ = true; 
         is_pie_or_dyn_cached_ = false;
     }
     
-    // Reads a word from the child's memory at a given address
     long peek_text(unsigned long long addr) {
-        if (child_pid_ <= 0) return -1L; // No child to peek
+        if (child_pid_ <= 0) return -1L; 
         errno = 0;
         long data = ptrace(PTRACE_PEEKTEXT, child_pid_, (void*)addr, nullptr);
         if (errno != 0) { 
             if (errno == ESRCH && program_loaded_) { 
-                // Child died, update state. This will be more robustly handled by handle_wait_status.
                 program_loaded_ = false; 
                 child_pid_ = -1;
             }
@@ -303,9 +294,8 @@ public:
         return data;
     }
 
-    // Writes a word to the child's memory at a given address
     void poke_text(unsigned long long addr, long data) {
-        if (child_pid_ <= 0) return; // No child to poke
+        if (child_pid_ <= 0) return; 
         errno = 0;
         if (ptrace(PTRACE_POKETEXT, child_pid_, (void*)addr, (void*)data) < 0) {
             if (errno == ESRCH && program_loaded_) { 
@@ -315,7 +305,6 @@ public:
         }
     }
 
-    // Retrieves current register values from the child process
     void get_registers() {
         if (child_pid_ <= 0 || !program_loaded_ ) return; 
         if (ptrace(PTRACE_GETREGS, child_pid_, nullptr, &regs_) < 0) {
@@ -323,7 +312,6 @@ public:
         }
     }
 
-    // Sets register values in the child process
     void set_registers() {
         if (child_pid_ <= 0 || !program_loaded_) return;
         if (ptrace(PTRACE_SETREGS, child_pid_, nullptr, &regs_) < 0) {
@@ -331,15 +319,12 @@ public:
         }
     }
     
-    // Checks if a given address is within any known executable region of the target program
     bool is_address_in_executable_region(unsigned long long addr) {
-        // Check primary .text segment (derived from ELF and maps) first
         if (text_segment_start_ != 0 && text_segment_size_ != 0) {
             if (addr >= text_segment_start_ && addr < text_segment_start_ + text_segment_size_) {
                 return true;
             }
         }
-        // Fallback to the general list of executable regions parsed from /proc/pid/maps
         for (const auto& region : executable_regions_) {
             if (addr >= region.first && addr < region.second) {
                 return true;
@@ -348,13 +333,11 @@ public:
         return false;
     }
 
-    // Parses ELF headers and /proc/pid/maps to determine entry point, base address, and executable regions
     void parse_elf_and_get_abs_entry(const char* program_file_path) {
         std::ifstream elf_file(program_file_path, std::ios::binary);
         if (!elf_file) { 
-            // File not found or accessible, clear relevant fields
             text_segment_elf_va_ = 0; text_segment_size_ = 0; entry_point_from_elf_ = 0; 
-            is_pie_or_dyn_cached_ = false; // Assume not PIE if ELF can't be read
+            is_pie_or_dyn_cached_ = false; 
             return; 
         }
 
@@ -365,6 +348,7 @@ public:
               ehdr.e_ident[EI_MAG2] == ELFMAG2 && ehdr.e_ident[EI_MAG3] == ELFMAG3)) { 
             text_segment_elf_va_ = 0; text_segment_size_ = 0; entry_point_from_elf_ = 0; 
             is_pie_or_dyn_cached_ = false;
+            elf_file.close();
             return; 
         }
         
@@ -374,14 +358,13 @@ public:
         text_segment_elf_va_ = 0;
         text_segment_size_ = 0;
 
-        // Attempt to find .text section to get its ELF virtual address and size
         if (ehdr.e_shoff != 0 && ehdr.e_shstrndx != SHN_UNDEF && ehdr.e_shstrndx < ehdr.e_shnum) {
             elf_file.seekg(ehdr.e_shoff, std::ios::beg);
             std::vector<Elf64_Shdr> shdrs(ehdr.e_shnum);
             elf_file.read(reinterpret_cast<char*>(shdrs.data()), ehdr.e_shnum * sizeof(Elf64_Shdr));
 
             if (elf_file.gcount() == static_cast<long>(ehdr.e_shnum * sizeof(Elf64_Shdr)) &&
-                shdrs[ehdr.e_shstrndx].sh_size > 0 && shdrs[ehdr.e_shstrndx].sh_type == SHT_STRTAB) { 
+                shdrs[ehdr.e_shstrndx].sh_size > 0 && ehdr.e_shstrndx < shdrs.size() && shdrs[ehdr.e_shstrndx].sh_type == SHT_STRTAB) { 
                 std::vector<char> shstrtab_data(shdrs[ehdr.e_shstrndx].sh_size);
                 elf_file.seekg(shdrs[ehdr.e_shstrndx].sh_offset, std::ios::beg);
                 elf_file.read(shstrtab_data.data(), shdrs[ehdr.e_shstrndx].sh_size);
@@ -396,14 +379,13 @@ public:
                 }
             }
         }
-        elf_file.close(); // Close ELF file after reading headers
+        elf_file.close(); 
         
-        // Determine base_address_ from /proc/pid/maps
         base_address_ = 0; 
         std::string maps_path = "/proc/" + std::to_string(child_pid_) + "/maps";
         std::ifstream maps_file(maps_path);
         std::string line_map_parser; 
-        std::string proc_exe_path; // Path to executable symlink in /proc
+        std::string proc_exe_path; 
         char exe_path_buf[PATH_MAX + 1] = {0}; 
         std::string symlink_path = "/proc/" + std::to_string(child_pid_) + "/exe";
         ssize_t len_symlink = readlink(symlink_path.c_str(), exe_path_buf, PATH_MAX);
@@ -428,35 +410,31 @@ public:
             if(path_matches_target){
                 try {
                     unsigned long long map_offset = hex_to_ullong(offset_str_map);
-                    if(map_offset == 0){ // First segment of the executable's mapping in memory
+                    if(map_offset == 0){ 
                         unsigned long long start_addr_map_segment = hex_to_ullong(addr_range_map.substr(0, addr_range_map.find('-')));
                         if(lowest_map_start_addr_for_exe == -1ULL || start_addr_map_segment < lowest_map_start_addr_for_exe){
                             lowest_map_start_addr_for_exe = start_addr_map_segment;
                         }
                     }
-                } catch(...) { /* ignore parsing errors for this map line */ }
+                } catch(...) { /* ignore parsing errors */ }
             }
         }
         if (lowest_map_start_addr_for_exe != -1ULL) base_address_ = lowest_map_start_addr_for_exe;
         maps_file.close();
 
-        // Calculate actual loaded entry point and load offset
         if (is_pie_or_dyn_cached_) {
             actual_loaded_entry_point_ = base_address_ + entry_point_from_elf_;
             load_offset_ = base_address_; 
         } else { 
             actual_loaded_entry_point_ = entry_point_from_elf_;
-            load_offset_ = 0; // For non-PIE, ELF entry is absolute, load_offset is effectively 0 relative to ELF VAs.
-                               // base_address_ from maps is the actual load address of the image.
+            load_offset_ = 0; 
         }
         
-        // Calculate actual start of .text segment in memory
         if (text_segment_elf_va_ != 0 && text_segment_size_ != 0) { 
              text_segment_start_ = text_segment_elf_va_ + load_offset_;
         } else if (actual_loaded_entry_point_ != 0) { 
-            // Fallback: if .text section info isn't available, try to find the mapped region containing the entry point.
              bool found_entry_region = false;
-             std::ifstream maps_file_fallback(maps_path); // Re-open maps file
+             std::ifstream maps_file_fallback(maps_path); 
              std::string line_fallback;
              while(std::getline(maps_file_fallback, line_fallback)) {
                  std::stringstream ss_fb(line_fallback);
@@ -470,15 +448,15 @@ public:
                     path_matches_fb = true;
                 }
 
-                 if(path_matches_fb && perms_fb.find('x') != std::string::npos) { // Executable region of target
+                 if(path_matches_fb && perms_fb.find('x') != std::string::npos) { 
                      size_t hyphen_pos = range_fb.find('-');
                      if (hyphen_pos != std::string::npos) {
                          try {
                              unsigned long long region_start = hex_to_ullong(range_fb.substr(0, hyphen_pos));
                              unsigned long long region_end = hex_to_ullong(range_fb.substr(hyphen_pos + 1));
                              if (actual_loaded_entry_point_ >= region_start && actual_loaded_entry_point_ < region_end) {
-                                 text_segment_start_ = region_start; // Use the start of this mapped region
-                                 text_segment_size_ = region_end - region_start; // Use its size
+                                 text_segment_start_ = region_start; 
+                                 text_segment_size_ = region_end - region_start; 
                                  found_entry_region = true;
                                  break;
                              }
@@ -487,18 +465,17 @@ public:
                  }
              }
              maps_file_fallback.close();
-             if (!found_entry_region) { // If no specific region for entry point found, make a guess
+             if (!found_entry_region) { 
                  text_segment_start_ = base_address_ != 0 ? base_address_ : (actual_loaded_entry_point_ & ~(0xFFFULL)); 
-                 text_segment_size_ = 0x2000; // Default guess for size
+                 text_segment_size_ = 0x2000; 
              }
-        } else { // No entry point from ELF, no .text by name
+        } else { 
             text_segment_start_ = base_address_; 
             text_segment_size_ = 0; 
         }
 
-        // Populate executable_regions_ list from /proc/pid/maps
         executable_regions_.clear();
-        std::ifstream maps_file_exec_regions(maps_path); // Re-open maps file
+        std::ifstream maps_file_exec_regions(maps_path); 
         std::string line_exec_regions; 
         while(std::getline(maps_file_exec_regions, line_exec_regions)) {
             std::stringstream ss_exec(line_exec_regions);
@@ -507,15 +484,13 @@ public:
             std::getline(ss_exec, path_exec); 
             if (!path_exec.empty() && path_exec.front() == ' ') path_exec.erase(0, path_exec.find_first_not_of(" "));
             
-            if (perms_exec.find('x') != std::string::npos) { // If region is executable
+            if (perms_exec.find('x') != std::string::npos) { 
                 bool is_target_binary_region = false;
                 if (!path_exec.empty() && (path_exec == current_program_path_ || (!proc_exe_path.empty() && path_exec == proc_exe_path))) {
                     is_target_binary_region = true;
                 }
-                // For "anon" example, allow executable anonymous regions.
-                // For general disassembly, focus on target binary's regions + vdso/vsyscall.
                 if (is_target_binary_region || 
-                    (path_exec.empty() && perms_exec.find('x') != std::string::npos) || // For JIT/anon code
+                    (path_exec.empty() && perms_exec.find('x') != std::string::npos) || 
                     path_exec.find("[vdso]") != std::string::npos || 
                     path_exec.find("[vsyscall]") != std::string::npos ) {
                     size_t hyphen_pos_exec = addr_range_exec.find('-');
@@ -525,7 +500,7 @@ public:
                                 hex_to_ullong(addr_range_exec.substr(0, hyphen_pos_exec)),
                                 hex_to_ullong(addr_range_exec.substr(hyphen_pos_exec + 1))
                             });
-                        } catch(...) { /* ignore parsing error for this region */ }
+                        } catch(...) { /* ignore parsing error */ }
                     }
                 }
             }
@@ -533,25 +508,22 @@ public:
         maps_file_exec_regions.close();
     }
 
-    // Loads and prepares a new program for debugging
     void load_program_internal(char** argv_for_exec) {
-        if (program_loaded_) { kill_program(); } // Ensure any previous program is gone
+        if (program_loaded_) { kill_program(); } 
         
-        // Reset all relevant states for the new program
         entry_point_from_elf_ = 0; actual_loaded_entry_point_ = 0; base_address_ = 0; load_offset_ = 0;
         text_segment_elf_va_ = 0; text_segment_size_ = 0; text_segment_start_ = 0; executable_regions_.clear();
         breakpoints_map_.clear(); breakpoint_id_to_addr_.clear(); next_breakpoint_id_ = 0; 
         is_pie_or_dyn_cached_ = false; was_stopped_at_breakpoint_addr_ = 0;
         status_ = 0; 
-        in_syscall_entry_ = true; // Expect syscall entry first for a new program
+        in_syscall_entry_ = true; 
         memset(&regs_, 0, sizeof(regs_));
 
-        user_program_path_display_ = argv_for_exec[0]; // Store user-provided path for display
+        user_program_path_display_ = argv_for_exec[0]; 
 
-        // Get absolute path of the program
         char abs_program_path_buf[PATH_MAX];
         if (realpath(argv_for_exec[0], abs_program_path_buf) == NULL) {
-            current_program_path_ = argv_for_exec[0]; // Use as-is if realpath fails
+            current_program_path_ = argv_for_exec[0]; 
         } else {
             current_program_path_ = abs_program_path_buf; 
         }
@@ -559,34 +531,28 @@ public:
         child_pid_ = fork();
         if (child_pid_ < 0) { perror("** fork failed"); program_loaded_ = false; return; }
 
-        if (child_pid_ == 0) { // Child process: trace itself and exec the target program
+        if (child_pid_ == 0) { 
             if (ptrace(PTRACE_TRACEME, 0, nullptr, nullptr) < 0) { perror("** ptrace(TRACEME) failed"); _exit(EXIT_FAILURE); }
-            // execvp will cause a SIGTRAP to be sent to the child after it successfully loads.
             if (execvp(current_program_path_.c_str(), argv_for_exec) < 0) { perror("** execvp failed"); _exit(EXIT_FAILURE); }
-        } else { // Parent process: debugger
+        } else { 
             if (waitpid(child_pid_, &status_, 0) < 0) { perror("** waitpid failed"); program_loaded_ = false; child_pid_ = -1; return;}
             
-            if (!WIFSTOPPED(status_)) { // Child didn't stop as expected (e.g., exited immediately)
+            if (!WIFSTOPPED(status_)) { 
                 std::cerr << "** Program '" << user_program_path_display_ << "' failed to start or exited/signaled immediately." << std::endl;
                 child_pid_ = -1; program_loaded_ = false; return;
             }
-            // Set ptrace options after the first stop
             if (ptrace(PTRACE_SETOPTIONS, child_pid_, 0, PTRACE_O_EXITKILL | PTRACE_O_TRACESYSGOOD) < 0) {
-                 // PTRACE_O_TRACESYSGOOD is important for distinguishing syscall SIGTRAPs.
-                 // If this fails, syscall command might be less reliable.
-                 // perror("** ptrace(PTRACE_SETOPTIONS) failed"); // Optional: log this warning
+                 // perror("** ptrace(PTRACE_SETOPTIONS) failed"); 
             }
             
             program_loaded_ = true; 
-            // Parse ELF and memory maps now that the child is loaded
             parse_elf_and_get_abs_entry(current_program_path_.c_str());
 
-            // If AT_ENTRY from auxv is needed as a fallback for actual_loaded_entry_point_
             if (actual_loaded_entry_point_ == 0 && entry_point_from_elf_ == 0 && base_address_ == 0) {
                 std::string auxv_path = "/proc/" + std::to_string(child_pid_) + "/auxv";
                 std::ifstream auxv_file(auxv_path, std::ios::binary);
                 if (auxv_file) {
-                    Elf64_auxv_t auxv_entry_struct; // Renamed to avoid conflict
+                    Elf64_auxv_t auxv_entry_struct; 
                     while (auxv_file.read(reinterpret_cast<char*>(&auxv_entry_struct), sizeof(auxv_entry_struct))) {
                         if (auxv_entry_struct.a_type == AT_ENTRY) {
                             actual_loaded_entry_point_ = auxv_entry_struct.a_un.a_val;
@@ -597,14 +563,12 @@ public:
                     auxv_file.close();
                 }
             }
-             if (actual_loaded_entry_point_ == 0) { // Still zero after all attempts
+             if (actual_loaded_entry_point_ == 0) { 
                 std::cerr << "** Could not determine entry point for " << user_program_path_display_ << std::endl;
                 kill_program(); return;
             }
             
             get_registers(); 
-            // For PIE/dynamic ELFs, the initial stop might be in the dynamic linker.
-            // We need to run until the *target binary's* actual entry point.
             if (regs_.rip != actual_loaded_entry_point_ && actual_loaded_entry_point_ != 0) {
                 long original_word_at_target_entry = peek_text(actual_loaded_entry_point_);
                 if (errno != 0 && original_word_at_target_entry == -1L) { 
@@ -617,16 +581,14 @@ public:
                 ptrace(PTRACE_CONT, child_pid_, nullptr, nullptr);
                 if (waitpid(child_pid_, &status_, 0) < 0) { perror("** waitpid after temp BP to entry failed"); kill_program(); return;}
 
-                if (child_pid_ > 0) poke_text(actual_loaded_entry_point_, original_word_at_target_entry); // Restore original byte
+                if (child_pid_ > 0) poke_text(actual_loaded_entry_point_, original_word_at_target_entry); 
                 
                 if (WIFSTOPPED(status_) && WSTOPSIG(status_) == SIGTRAP) {
                     get_registers();
-                    // After hitting the temp BP, RIP is usually BP_addr + 1. Adjust it to be AT the entry.
                     if (regs_.rip == actual_loaded_entry_point_ + 1) { 
                         regs_.rip--; 
                         set_registers(); 
                     } else if (regs_.rip != actual_loaded_entry_point_){
-                        // If RIP is somewhere else unexpected, but we should be at entry.
                         regs_.rip = actual_loaded_entry_point_; 
                         set_registers();
                     }
@@ -637,50 +599,43 @@ public:
                 }
             }
             
-            get_registers(); // Ensure regs_ are current for disassembly
+            get_registers(); 
             
             std::cout << "** program '" << user_program_path_display_ << "' loaded. entry point: 0x" << std::hex << actual_loaded_entry_point_ << "." << std::dec << std::endl;
             disassemble_instructions(regs_.rip, 5); 
-            was_stopped_at_breakpoint_addr_ = 0; // Not stopped at a user-set BP initially
+            was_stopped_at_breakpoint_addr_ = 0; 
         }
     }
     
-    // Disassembles 'count' instructions starting from 'start_address'
     void disassemble_instructions(unsigned long long start_address, int count) {
         if (!program_loaded_ || child_pid_ <= 0) return;
 
-        // Initial check for the start_address itself
         if (!is_address_in_executable_region(start_address) && start_address !=0) {
              std::cout << "** the address is out of the range of the executable region." << std::endl;
              return;
         }
 
         const int MAX_INSTR_BYTES_PER_INS = 15; 
-        std::vector<unsigned char> instruction_bytes_buffer; // Use a vector for dynamic sizing
-        // Reserve enough space to avoid frequent reallocations
+        std::vector<unsigned char> instruction_bytes_buffer; 
         instruction_bytes_buffer.reserve(MAX_INSTR_BYTES_PER_INS * count + MAX_INSTR_BYTES_PER_INS); 
 
         unsigned long long current_addr_for_mem_read = start_address;
-        // Aim to read enough bytes for 'count' instructions, plus some buffer for Capstone.
-        size_t target_bytes_to_read_for_disassembly = MAX_INSTR_BYTES_PER_INS * (count + 2); // Read a bit more for context
+        size_t target_bytes_to_read_for_disassembly = MAX_INSTR_BYTES_PER_INS * (count + 2); 
 
         for (size_t total_bytes_copied_to_buffer = 0; total_bytes_copied_to_buffer < target_bytes_to_read_for_disassembly; ) {
-            if (child_pid_ <=0) break; // Child process died
+            if (child_pid_ <=0) break; 
 
-            // Stop reading if current_addr_for_mem_read goes out of known executable regions (after the first word)
             if (total_bytes_copied_to_buffer > 0 && !is_address_in_executable_region(current_addr_for_mem_read) && current_addr_for_mem_read != 0) {
                 break;
             }
             
-            long memory_word_data = peek_text(current_addr_for_mem_read); // Read a word (typically 8 bytes)
-            if (errno != 0 && memory_word_data == -1L) { // Error reading memory
+            long memory_word_data = peek_text(current_addr_for_mem_read); 
+            if (errno != 0 && memory_word_data == -1L) { 
                 if (total_bytes_copied_to_buffer == 0 && !is_address_in_executable_region(start_address)) {
-                    // This case is handled by the initial check at the function top.
                 }
                 break; 
             }
 
-            // Copy bytes from the read word into our buffer, substituting original bytes for breakpoints
             for (size_t byte_idx_in_word = 0; byte_idx_in_word < sizeof(long); ++byte_idx_in_word) {
                 if (total_bytes_copied_to_buffer >= target_bytes_to_read_for_disassembly) break;
                 
@@ -689,32 +644,31 @@ public:
                 
                 auto bp_iterator = breakpoints_map_.find(actual_byte_address_in_memory); 
                 if (bp_iterator != breakpoints_map_.end()) { 
-                    // This byte IS a breakpoint location. Use its stored original LSB.
                     instruction_bytes_buffer.push_back((unsigned char)(bp_iterator->second & 0xFF)); 
                 } else {
                     instruction_bytes_buffer.push_back(byte_value_from_memory);
                 }
                 total_bytes_copied_to_buffer++;
             }
-            current_addr_for_mem_read += sizeof(long); // Move to the next word
+            current_addr_for_mem_read += sizeof(long); 
         }
 
         if (instruction_bytes_buffer.empty()) {
             if (is_address_in_executable_region(start_address)) { 
                  std::cout << "** failed to read instructions at 0x" << std::hex << start_address << std::dec << "." << std::endl;
-            } // Else, the initial check for start_address already printed the OOR message.
+            } 
             return;
         }
 
-        cs_insn *capstone_insn_array; // Array of disassembled instructions from Capstone
+        cs_insn *capstone_insn_array; 
         size_t num_insns_disassembled_by_capstone = cs_disasm(capstone_handle_, 
                                                             instruction_bytes_buffer.data(), 
                                                             instruction_bytes_buffer.size(), 
                                                             start_address, 
-                                                            0, // Disassemble all instructions in buffer
+                                                            0, 
                                                             &capstone_insn_array); 
 
-        std::cout << std::left; // Align output to the left
+        std::cout << std::left; 
 
         size_t instructions_displayed_count = 0;
         bool oor_message_already_printed = false;
@@ -722,17 +676,14 @@ public:
 
         if (num_insns_disassembled_by_capstone > 0) {
             for (size_t i = 0; i < num_insns_disassembled_by_capstone && instructions_displayed_count < static_cast<size_t>(count); ++i) {
-                // Check if the current instruction's address is in an executable region
                 if (!is_address_in_executable_region(capstone_insn_array[i].address) && capstone_insn_array[i].address !=0 ) {
-                    if (instructions_displayed_count > 0) { // If some instructions were already printed
+                    if (instructions_displayed_count > 0) { 
                          std::cout << "** the address is out of the range of the executable region." << std::endl;
                          oor_message_already_printed = true;
                     }
-                    // If instructions_displayed_count is 0, the initial check for start_address should have caught it.
                     break; 
                 }
 
-                // Print: address, raw bytes, mnemonic, operands
                 std::cout << "      " << std::hex << capstone_insn_array[i].address << ": " << std::dec; 
                 std::string instruction_bytes_hex_str;
                 for (size_t j = 0; j < capstone_insn_array[i].size; ++j) {
@@ -748,30 +699,24 @@ public:
                 address_after_last_displayed_instruction = capstone_insn_array[i].address + capstone_insn_array[i].size;
             }
             
-            cs_free(capstone_insn_array, num_insns_disassembled_by_capstone); // Free Capstone's memory
+            cs_free(capstone_insn_array, num_insns_disassembled_by_capstone); 
             
-            // If fewer than 'count' instructions were displayed, and no OOR message yet,
-            // check if the *next* instruction would have been OOR.
             if (instructions_displayed_count < static_cast<size_t>(count) && !oor_message_already_printed) {
-                if (instructions_displayed_count > 0 || num_insns_disassembled_by_capstone == 0) { // Only if we tried to display or capstone found nothing
+                if (instructions_displayed_count > 0 || num_insns_disassembled_by_capstone == 0) { 
                      if (!is_address_in_executable_region(address_after_last_displayed_instruction) && address_after_last_displayed_instruction != 0 && address_after_last_displayed_instruction != start_address) {
                         std::cout << "** the address is out of the range of the executable region." << std::endl;
                      }
                 }
             }
-        } else { // cs_disasm returned 0 instructions
+        } else { 
             if (is_address_in_executable_region(start_address) && !instruction_bytes_buffer.empty()){
-                // Read bytes, but Capstone couldn't disassemble. Could be invalid opcodes.
-                // Spec doesn't explicitly cover this; focuses on OOR for address.
             }
         }
         std::cout << std::right << std::flush; 
     }
 
-    // Handles the status of the child process after it stops or terminates
     void handle_wait_status() { 
         if (child_pid_ <= 0 && !(WIFEXITED(status_) || WIFSIGNALED(status_))) { 
-            // No active child, or status doesn't indicate exit/signal (should not happen if child_pid_ <=0)
             return; 
         }
 
@@ -781,7 +726,7 @@ public:
             breakpoints_map_.clear(); breakpoint_id_to_addr_.clear(); text_segment_elf_va_ = 0; text_segment_size_ = 0;
             executable_regions_.clear(); next_breakpoint_id_ = 0; load_offset_ = 0;
             actual_loaded_entry_point_ = 0; base_address_ = 0; entry_point_from_elf_ = 0;
-            text_segment_start_ = 0; in_syscall_entry_ = true; // Reset for next load
+            text_segment_start_ = 0; in_syscall_entry_ = true; 
             return;
         } else if (WIFSIGNALED(status_)) {
             std::cout << "** the target program terminated by signal " << strsignal(WTERMSIG(status_)) << "." << std::endl;
@@ -789,125 +734,118 @@ public:
             breakpoints_map_.clear(); breakpoint_id_to_addr_.clear(); text_segment_elf_va_ = 0; text_segment_size_ = 0;
             executable_regions_.clear(); next_breakpoint_id_ = 0; load_offset_ = 0;
             actual_loaded_entry_point_ = 0; base_address_ = 0; entry_point_from_elf_ = 0;
-            text_segment_start_ = 0; in_syscall_entry_ = true; // Reset for next load
+            text_segment_start_ = 0; in_syscall_entry_ = true; 
             return;
         }
         else if (WIFSTOPPED(status_)) {
-            int sig = WSTOPSIG(status_);
             get_registers(); 
             
-            if (child_pid_ <= 0) { // Child might have died during get_registers or other ptrace ops
-                 if (program_loaded_) { program_loaded_ = false; } // Ensure consistency
+            if (child_pid_ <= 0) { 
+                 if (program_loaded_) { program_loaded_ = false; } 
                  was_stopped_at_breakpoint_addr_ = 0; 
                  return;
             }
 
             bool event_handled_and_disassembled = false;
             unsigned long long rip_as_reported_by_kernel = regs_.rip; 
+            was_stopped_at_breakpoint_addr_ = 0; 
 
-            // This flag indicates if the *current* stop is at a breakpoint whose original instruction
-            // has just been restored by this function. It's set after restoring.
-            // `was_stopped_at_breakpoint_addr_` is reset at the start of this function for the current event.
-            unsigned long long previous_bp_addr_if_any = was_stopped_at_breakpoint_addr_; // Store for context if needed
-            was_stopped_at_breakpoint_addr_ = 0; // Reset for the current stop event processing
+            int stop_signal = WSTOPSIG(status_);
 
-            if (sig == SIGTRAP) {
-                // Check for Breakpoint Hit (INT3 instruction)
-                // RIP will be at address_of_0xCC + 1
-                unsigned long long potential_bp_addr_from_int3 = rip_as_reported_by_kernel - 1; 
+            // Priority 1: Syscall event from PTRACE_O_TRACESYSGOOD
+            if (stop_signal == (SIGTRAP | 0x80)) {
+                unsigned long long syscall_instruction_address = regs_.rip;
+                if (regs_.rip >= 2) { syscall_instruction_address = regs_.rip - 2; }
+
+                long syscall_number = regs_.orig_rax;
+                long syscall_return_value = regs_.rax;
+
+                if (in_syscall_entry_) {
+                    std::cout << "** enter a syscall(" << std::dec << syscall_number << ") at 0x" << std::hex << syscall_instruction_address << "." << std::dec << std::endl;
+                    in_syscall_entry_ = false;
+                } else {
+                    std::cout << "** leave a syscall(" << std::dec << syscall_number << ") = " << std::dec << syscall_return_value;
+                    std::cout << " at 0x" << std::hex << syscall_instruction_address << "." << std::dec << std::endl;
+                    in_syscall_entry_ = true;
+                }
+                disassemble_instructions(syscall_instruction_address, 5);
+                event_handled_and_disassembled = true;
+            }
+            // Priority 2: Plain SIGTRAP (could be breakpoint, single-step, or syscall fallback)
+            else if (stop_signal == SIGTRAP) {
+                unsigned long long potential_bp_addr_from_int3 = rip_as_reported_by_kernel - 1;
                 auto bp_iter_from_int3 = breakpoints_map_.find(potential_bp_addr_from_int3);
-                
-                // Check for Single-Step landing directly on a Breakpoint Address
-                // This might happen if a single step lands on an instruction that has 0xCC
                 auto bp_iter_direct_land = breakpoints_map_.find(rip_as_reported_by_kernel);
 
-                if (bp_iter_from_int3 != breakpoints_map_.end()) { // Common case: PTRACE_CONT hits an INT3
-                    regs_.rip = potential_bp_addr_from_int3; // Adjust RIP to point AT the breakpoint instruction
+                if (bp_iter_from_int3 != breakpoints_map_.end()) { // Breakpoint hit (INT3)
+                    regs_.rip = potential_bp_addr_from_int3; 
                     set_registers();        
-
                     std::cout << "** hit a breakpoint at 0x" << std::hex << regs_.rip << "." << std::dec << std::endl;
-
-                    // Restore the original instruction word at the breakpoint address
                     poke_text(regs_.rip, bp_iter_from_int3->second); 
-                    was_stopped_at_breakpoint_addr_ = regs_.rip; // Mark that we are now stopped AT this restored BP
+                    was_stopped_at_breakpoint_addr_ = regs_.rip; 
                     disassemble_instructions(regs_.rip, 5);
                     event_handled_and_disassembled = true;
-                }
-                // This case (single-step landing on an active 0xCC) should be less common if BP re-arming is correct.
-                else if (bp_iter_direct_land != breakpoints_map_.end()) { 
-                    // RIP is already at the breakpoint address.
+                } else if (bp_iter_direct_land != breakpoints_map_.end()) { // Single-step landed on an active BP
                     std::cout << "** hit a breakpoint at 0x" << std::hex << regs_.rip << "." << std::dec << std::endl;
                     poke_text(regs_.rip, bp_iter_direct_land->second); 
                     was_stopped_at_breakpoint_addr_ = regs_.rip;    
                     disassemble_instructions(regs_.rip, 5);
                     event_handled_and_disassembled = true;
                 }
-                // Check for Syscall trap (if not a breakpoint)
-                else if ( (WSTOPSIG(status_) == (SIGTRAP | 0x80)) || // Caused by PTRACE_O_TRACESYSGOOD
-                          (current_command_ == "syscall" && sig == SIGTRAP)    // Fallback for PTRACE_SYSCALL if plain SIGTRAP
-                        )
-                { 
-                    // This block is reached if SIGTRAP was not handled as a breakpoint above.
+                // Fallback for PTRACE_SYSCALL command if TRACESYSGOOD was not effective
+                else if (current_command_ == "syscall") { 
                     unsigned long long syscall_instruction_address = regs_.rip;
-                    // For syscall (0f 05), RIP is *after* the instruction. Address of syscall is rip - 2.
-                    if (regs_.rip >= 2) { 
-                        syscall_instruction_address = regs_.rip - 2;
-                    } else {
-                        // This is unexpected for a syscall stop. Fall through to default disassembly.
-                    }
+                    if (regs_.rip >= 2) { syscall_instruction_address = regs_.rip - 2; }
 
-                    long syscall_number = regs_.orig_rax; // Syscall number in orig_rax before syscall
-                    long syscall_return_value = regs_.rax;  // Return value in rax after syscall exit
+                    long syscall_number = regs_.orig_rax;
+                    long syscall_return_value = regs_.rax;
 
-                    if (in_syscall_entry_) { // Expecting a syscall entry
+                    if (in_syscall_entry_) {
                         std::cout << "** enter a syscall(" << std::dec << syscall_number << ") at 0x" << std::hex << syscall_instruction_address << "." << std::dec << std::endl;
-                        in_syscall_entry_ = false; // Next PTRACE_SYSCALL will be for exit
-                    } else { // Expecting a syscall exit
+                        in_syscall_entry_ = false;
+                    } else {
                         std::cout << "** leave a syscall(" << std::dec << syscall_number << ") = " << std::dec << syscall_return_value;
                         std::cout << " at 0x" << std::hex << syscall_instruction_address << "." << std::dec << std::endl;
-                        in_syscall_entry_ = true; // Next PTRACE_SYSCALL will be for entry
+                        in_syscall_entry_ = true;
                     }
                     disassemble_instructions(syscall_instruction_address, 5);
                     event_handled_and_disassembled = true;
                 }
-                // Other SIGTRAPs (e.g. from PTRACE_SINGLESTEP not hitting a known BP) will fall through.
-            } else if (sig == SIGWINCH) { // Window resize signal
+                // If plain SIGTRAP and not handled above, it's likely a single-step completion.
+                // It will fall through to the default disassembly.
+            }
+            // Priority 3: Other signals like SIGWINCH
+            else if (stop_signal == SIGWINCH) { 
                 if (program_loaded_ && child_pid_ > 0) {
-                    ptrace(PTRACE_CONT, child_pid_, nullptr, (void*)((long)sig)); // Pass signal to child
+                    ptrace(PTRACE_CONT, child_pid_, nullptr, (void*)((long)stop_signal)); 
                     if (waitpid(child_pid_, &status_, 0) < 0 ) { 
                         if(program_loaded_ && child_pid_ > 0) { child_pid_ = -1; program_loaded_ = false;} 
                     }
-                    // Recursively call handle_wait_status to process the new state after passing SIGWINCH
                     if (child_pid_ > 0 && program_loaded_) handle_wait_status(); 
-                    return; // SIGWINCH and its immediate effect are handled.
+                    return; 
                 }
-            } else { // Other signals (SIGSEGV, SIGILL, etc.)
+            }
+            // Priority 4: Other stop signals
+            else { 
                 if (program_loaded_ && child_pid_ > 0) { 
-                    std::cout << "** Child stopped by signal " << strsignal(sig) << " (SIG=" << sig << ")" << std::endl;
+                    std::cout << "** Child stopped by signal " << strsignal(stop_signal) << " (SIG=" << stop_signal << ")" << std::endl;
                 }
             }
 
-            // If the event was not a recognized breakpoint or handled syscall trap,
-            // and the program is still loaded, disassemble from the current RIP.
-            // This covers single-step completions or stops from other signals.
+            // Default disassembly if not specifically handled above and program is still running
             if (!event_handled_and_disassembled && program_loaded_ && child_pid_ > 0) {
                 disassemble_instructions(rip_as_reported_by_kernel, 5);
             }
         }
     }
 
-    // Executes a single instruction
     void step_instruction() {
         if (!program_loaded_ || child_pid_ <= 0) return;
         
         get_registers();
         unsigned long long rip_before_step = regs_.rip;
-
-        // Check if we are currently stopped AT a breakpoint whose original instruction was restored.
-        // `was_stopped_at_breakpoint_addr_` is set by `handle_wait_status` if it restored a BP at current RIP.
         bool stepping_from_active_restored_bp = (was_stopped_at_breakpoint_addr_ == rip_before_step && was_stopped_at_breakpoint_addr_ != 0);
         
-        // Perform the single step
         if (ptrace(PTRACE_SINGLESTEP, child_pid_, nullptr, nullptr) < 0) { 
             if (errno == ESRCH) { program_loaded_ = false; child_pid_ = -1; } 
             return; 
@@ -917,29 +855,24 @@ public:
             return;
         }
 
-        // After the single step, if we stepped *off* a breakpoint, re-insert the 0xCC for that breakpoint.
         if (stepping_from_active_restored_bp) { 
-            auto bp_iterator = breakpoints_map_.find(rip_before_step); // Find the BP we were on
+            auto bp_iterator = breakpoints_map_.find(rip_before_step); 
             if (bp_iterator != breakpoints_map_.end()) { 
-                if (child_pid_ > 0 && program_loaded_) { // Check if child is still valid
-                    long rearm_breakpoint_word = (bp_iterator->second & ~0xFFL) | 0xCC; // Use original data for non-0xCC bytes
+                if (child_pid_ > 0 && program_loaded_) { 
+                    long rearm_breakpoint_word = (bp_iterator->second & ~0xFFL) | 0xCC; 
                     poke_text(rip_before_step, rearm_breakpoint_word);
                 }
             }
         }
-        
-        handle_wait_status(); // Process the state after the single step
+        handle_wait_status(); 
     }
 
-    // Continues program execution until a breakpoint or termination
     void continue_execution() {
         if (!program_loaded_ || child_pid_ <= 0) return;
         
         get_registers();
         unsigned long long rip_at_continue_start = regs_.rip;
 
-        // If currently stopped AT a breakpoint (original instruction restored),
-        // we must first single-step over this instruction, then re-insert 0xCC, then PTRACE_CONT.
         if (was_stopped_at_breakpoint_addr_ == rip_at_continue_start && was_stopped_at_breakpoint_addr_ != 0) {
             if (ptrace(PTRACE_SINGLESTEP, child_pid_, nullptr, nullptr) < 0) { 
                 if (errno == ESRCH) { program_loaded_ = false; child_pid_ = -1; }
@@ -951,30 +884,26 @@ public:
                 return;
             }
 
-            // Re-arm the breakpoint we just stepped over
             if (child_pid_ > 0 && program_loaded_) { 
                 auto bp_iterator = breakpoints_map_.find(rip_at_continue_start);
                 if (bp_iterator != breakpoints_map_.end()) { 
                     long rearm_breakpoint_word = (bp_iterator->second & ~0xFFL) | 0xCC;
                     poke_text(rip_at_continue_start, rearm_breakpoint_word);
                 }
-            } else { // Child died or problem during the single step
+            } else { 
                 status_ = temp_status_after_single_step; 
                 handle_wait_status(); 
                 return; 
             }
 
-            // If program terminated or had another critical stop during this single step
             if (WIFEXITED(temp_status_after_single_step) || WIFSIGNALED(temp_status_after_single_step)) {
                 status_ = temp_status_after_single_step; 
                 handle_wait_status(); 
                 return; 
             }
-            // If the single step hit another breakpoint, handle_wait_status (called later) will report it.
-            status_ = temp_status_after_single_step; // Update main status for PTRACE_CONT
+            status_ = temp_status_after_single_step; 
         }
         
-        // Now, perform the PTRACE_CONT
         if (child_pid_ > 0 && program_loaded_) { 
             if (ptrace(PTRACE_CONT, child_pid_, nullptr, nullptr) < 0) { 
                 if (errno == ESRCH) { program_loaded_ = false; child_pid_ = -1; }
@@ -984,17 +913,15 @@ public:
                 if (program_loaded_ && child_pid_ > 0) {child_pid_ = -1; program_loaded_ = false;}
                 return;
             }
-            handle_wait_status(); // Handle the result of PTRACE_CONT
+            handle_wait_status(); 
         }
     }
 
-    // Handles the 'syscall' command: executes until next syscall entry/exit
     void handle_syscall_command() {
         if (!program_loaded_ || child_pid_ <= 0) return;
         get_registers();
         unsigned long long rip_at_cmd_start = regs_.rip;
         
-        // If currently stopped AT a breakpoint, single-step over it first.
         if (was_stopped_at_breakpoint_addr_ == rip_at_cmd_start && was_stopped_at_breakpoint_addr_ != 0) {
             if (ptrace(PTRACE_SINGLESTEP, child_pid_, nullptr, nullptr) < 0) { 
                 if (errno == ESRCH) {program_loaded_=false; child_pid_=-1;} return; 
@@ -1004,7 +931,6 @@ public:
                 if (program_loaded_&&child_pid_>0) {program_loaded_=false; child_pid_=-1;} return;
             }
             
-            // Re-arm the breakpoint
             if (child_pid_ > 0 && program_loaded_) {
                 auto bp_it = breakpoints_map_.find(rip_at_cmd_start);
                 if (bp_it != breakpoints_map_.end()) {
@@ -1013,26 +939,29 @@ public:
                 }
             } else { status_ = temp_status; handle_wait_status(); return; }
 
-            // If single step led to termination or another breakpoint, handle it and return.
-            // The user will need to issue 'syscall' again.
             if (WIFEXITED(temp_status) || WIFSIGNALED(temp_status) ) {
                 status_ = temp_status; handle_wait_status(); return;
             }
             status_ = temp_status; 
-            if (WIFSTOPPED(status_) && WSTOPSIG(status_) == SIGTRAP) {
-                 get_registers(); 
-                 unsigned long long current_rip_after_step = regs_.rip;
-                 // Check if this SIGTRAP is due to hitting another breakpoint
-                 bool hit_another_bp = breakpoints_map_.count(current_rip_after_step -1) || breakpoints_map_.count(current_rip_after_step);
-                 if(hit_another_bp) {
-                    handle_wait_status(); // Report the breakpoint hit
-                    return; // Do not proceed to PTRACE_SYSCALL for this 'syscall' command instance.
+            if (WIFSTOPPED(status_)) { // Check if the single step hit something significant
+                 int stop_sig_after_step = WSTOPSIG(status_);
+                 if (stop_sig_after_step == (SIGTRAP | 0x80)) { // Hit a syscall immediately
+                     handle_wait_status(); // Process it as a syscall
+                     return;
+                 } else if (stop_sig_after_step == SIGTRAP) { // Could be another breakpoint
+                     get_registers(); 
+                     unsigned long long current_rip_after_step = regs_.rip;
+                     bool hit_another_bp = breakpoints_map_.count(current_rip_after_step -1) || breakpoints_map_.count(current_rip_after_step);
+                     if(hit_another_bp) {
+                        handle_wait_status(); 
+                        return; 
+                     }
+                     // If not another BP, it was just a single step, proceed to PTRACE_SYSCALL
                  }
+                 // If other signal, let PTRACE_SYSCALL proceed, or handle_wait_status will catch it.
             }
         }
         
-        // Proceed with PTRACE_SYSCALL. The `in_syscall_entry_` flag (managed by handle_wait_status)
-        // will determine if the next stop is treated as an entry or exit.
         if (child_pid_ > 0 && program_loaded_) {
             if (ptrace(PTRACE_SYSCALL, child_pid_, nullptr, nullptr) < 0) {
                 if (errno == ESRCH) { program_loaded_ = false; child_pid_ = -1; }
@@ -1042,11 +971,10 @@ public:
                 if(program_loaded_ && child_pid_ > 0) {child_pid_ = -1; program_loaded_ = false;} 
                 return;
             }
-            handle_wait_status(); // Process the stop from PTRACE_SYSCALL
+            handle_wait_status(); 
         }
     }
 
-    // Prints current register values
     void print_registers() {
         if (!program_loaded_ || child_pid_ <=0) { return; }
         if (ptrace(PTRACE_GETREGS, child_pid_, nullptr, &regs_) < 0) {
@@ -1056,28 +984,24 @@ public:
 
         std::ios_base::fmtflags original_flags = std::cout.flags(); 
         std::cout << std::hex << std::setfill('0');
-        // Adjusted spacing for better alignment based on sample output
-        std::cout << "$rax 0x" << std::setw(16) << regs_.rax << "   $rbx 0x" << std::setw(16) << regs_.rbx << "   $rcx 0x" << std::setw(16) << regs_.rcx << std::endl;
-        std::cout << "$rdx 0x" << std::setw(16) << regs_.rdx << "   $rsi 0x" << std::setw(16) << regs_.rsi << "   $rdi 0x" << std::setw(16) << regs_.rdi << std::endl;
-        std::cout << "$rbp 0x" << std::setw(16) << regs_.rbp << "   $rsp 0x" << std::setw(16) << regs_.rsp << "   $r8  0x" << std::setw(16) << regs_.r8  << std::endl;
-        std::cout << "$r9  0x" << std::setw(16) << regs_.r9  << "   $r10 0x" << std::setw(16) << regs_.r10 << "   $r11 0x" << std::setw(16) << regs_.r11 << std::endl;
-        std::cout << "$r12 0x" << std::setw(16) << regs_.r12 << "   $r13 0x" << std::setw(16) << regs_.r13 << "   $r14 0x" << std::setw(16) << regs_.r14 << std::endl;
-        std::cout << "$r15 0x" << std::setw(16) << regs_.r15 << "   $rip 0x" << std::setw(16) << regs_.rip << "   $eflags 0x" << std::setw(16) << regs_.eflags << std::endl;
-        std::cout.flags(original_flags); // Restore original cout flags
+        std::cout << "$rax 0x" << std::setw(16) << regs_.rax << "    $rbx 0x" << std::setw(16) << regs_.rbx << "    $rcx 0x" << std::setw(16) << regs_.rcx << std::endl;
+        std::cout << "$rdx 0x" << std::setw(16) << regs_.rdx << "    $rsi 0x" << std::setw(16) << regs_.rsi << "    $rdi 0x" << std::setw(16) << regs_.rdi << std::endl;
+        std::cout << "$rbp 0x" << std::setw(16) << regs_.rbp << "    $rsp 0x" << std::setw(16) << regs_.rsp << "    $r8  0x" << std::setw(16) << regs_.r8  << std::endl;
+        std::cout << "$r9  0x" << std::setw(16) << regs_.r9  << "    $r10 0x" << std::setw(16) << regs_.r10 << "    $r11 0x" << std::setw(16) << regs_.r11 << std::endl;
+        std::cout << "$r12 0x" << std::setw(16) << regs_.r12 << "    $r13 0x" << std::setw(16) << regs_.r13 << "    $r14 0x" << std::setw(16) << regs_.r14 << std::endl;
+        std::cout << "$r15 0x" << std::setw(16) << regs_.r15 << "    $rip 0x" << std::setw(16) << regs_.rip << "    $eflags 0x" << std::setw(16) << regs_.eflags << std::endl;
+        std::cout.flags(original_flags); 
     }
 
-    // Common logic for setting a breakpoint (absolute or RVA)
     void set_breakpoint_common(unsigned long long addr, bool is_rva_command) {
         if (!program_loaded_ || child_pid_ <= 0) { return; }
         
         bool is_valid_address_for_breakpoint = false;
-        // Check primary .text segment first
         if (text_segment_start_ != 0 && text_segment_size_ != 0) { 
             if (addr >= text_segment_start_ && addr < text_segment_start_ + text_segment_size_) {
                 is_valid_address_for_breakpoint = true;
             }
         }
-        // If not in primary .text, check all other known executable regions
         if (!is_valid_address_for_breakpoint) { 
             for(const auto& region : executable_regions_){
                 if(addr >= region.first && addr < region.second){
@@ -1086,41 +1010,36 @@ public:
                 }
             }
         }
-        // Last resort check if no regions are known (e.g. for "anon" example before full parsing)
         if (!is_valid_address_for_breakpoint && addr != 0 && executable_regions_.empty() && text_segment_size_ == 0) {
             errno = 0;
-            peek_text(addr); // Try to read from the address
-            if (errno == 0) is_valid_address_for_breakpoint = true; // If readable, assume valid for BP for now
+            peek_text(addr); 
+            if (errno == 0) is_valid_address_for_breakpoint = true; 
         }
 
         if (!is_valid_address_for_breakpoint) { 
             std::cout << "** the target address is not valid." << std::endl; return;
         }
 
-        // Check if breakpoint already exists at this address
         if (breakpoints_map_.count(addr)) { 
-             // Spec doesn't say what to do. GDB might reconfirm.
-             // For simplicity, if already set, just confirm.
-             std::cout << "** set a breakpoint at 0x" << std::hex << addr << "." << std::dec << std::endl;
+             std::cout << "** set a breakpoint at 0x" << std::hex << addr << "." << std::dec << std::endl; 
              return;
         }
         
-        long original_memory_word = peek_text(addr); // Read the original word from memory
-        if (errno != 0 && original_memory_word == -1L) { // Check errno as -1L can be valid data
+        long original_memory_word = peek_text(addr); 
+        if (errno != 0 && original_memory_word == -1L) { 
             std::cout << "** the target address is not valid." << std::endl; return;
         }
         
-        breakpoints_map_[addr] = original_memory_word; // Store the original word
-        breakpoint_id_to_addr_[next_breakpoint_id_] = addr; // Map ID to address
+        breakpoints_map_[addr] = original_memory_word; 
+        breakpoint_id_to_addr_[next_breakpoint_id_] = addr; 
         
-        long breakpoint_word = (original_memory_word & ~0xFFL) | 0xCC; // Place 0xCC (INT3) in the LSB
-        poke_text(addr, breakpoint_word); // Write the INT3 instruction
+        long breakpoint_word = (original_memory_word & ~0xFFL) | 0xCC; 
+        poke_text(addr, breakpoint_word); 
         
         std::cout << "** set a breakpoint at 0x" << std::hex << addr << "." << std::dec << std::endl;
         next_breakpoint_id_++;
     }
 
-    // Sets a breakpoint at an absolute address
     void set_breakpoint(const std::string& addr_str) {
         unsigned long long addr;
         try { addr = hex_to_ullong(addr_str); } 
@@ -1128,95 +1047,79 @@ public:
         set_breakpoint_common(addr, false);
     }
 
-    // Sets a breakpoint at an address relative to the program's base (RVA)
     void set_breakpoint_rva(const std::string& offset_str) {
         unsigned long long offset;
         try { offset = hex_to_ullong(offset_str); } 
         catch (const std::exception& e) { std::cout << "** the target address is not valid." << std::endl; return; }
         
-        // base_address_ is determined during program load from /proc/pid/maps
         unsigned long long addr = base_address_ + offset; 
         set_breakpoint_common(addr, true);
     }
 
-    // Displays information about currently set breakpoints
     void info_breakpoints() {
         if (!program_loaded_) { return; } 
         std::vector<std::pair<int, unsigned long long>> active_breakpoints_for_display;
-        // Iterate through ID-to-address map to maintain ID order and check if still active
         for(const auto& id_addr_pair : breakpoint_id_to_addr_){
-            if(breakpoints_map_.count(id_addr_pair.second)){ // Check if still in the main breakpoints_map_
+            if(breakpoints_map_.count(id_addr_pair.second)){ 
                 active_breakpoints_for_display.push_back({id_addr_pair.first, id_addr_pair.second});
             }
         }
-        // Sort by ID for consistent display order
         std::sort(active_breakpoints_for_display.begin(), active_breakpoints_for_display.end()); 
 
         if (active_breakpoints_for_display.empty()) { std::cout << "** no breakpoints." << std::endl; return; }
 
-        std::cout << "Num     Address" << std::endl; // Header with spacing
+        std::cout << "Num     Address" << std::endl; 
         for (const auto& bp_info : active_breakpoints_for_display) {
-            std::cout << std::left << std::setw(8) << bp_info.first // Print ID
-                      << "0x" << std::hex << bp_info.second << std::dec << std::endl; // Print address
+            std::cout << std::left << std::setw(8) << bp_info.first 
+                      << "0x" << std::hex << bp_info.second << std::dec << std::endl; 
         }
     }
 
-    // Deletes a breakpoint by its ID
     void delete_breakpoint(int id) {
         if (!program_loaded_ || child_pid_ <= 0) { return; }
         auto id_iterator = breakpoint_id_to_addr_.find(id);
-        if (id_iterator == breakpoint_id_to_addr_.end()) { // Breakpoint ID not found
+        if (id_iterator == breakpoint_id_to_addr_.end()) { 
             std::cout << "** breakpoint " << id << " does not exist." << std::endl; return;
         }
 
         unsigned long long addr_to_delete = id_iterator->second;
         auto bp_data_iterator = breakpoints_map_.find(addr_to_delete);
         if (bp_data_iterator == breakpoints_map_.end()) { 
-            // ID exists in id_to_addr map, but not in main breakpoints_map_ (inconsistent state)
             std::cout << "** breakpoint " << id << " does not exist (internal error - map inconsistent)." << std::endl;
-            breakpoint_id_to_addr_.erase(id_iterator); // Clean up ID map
+            breakpoint_id_to_addr_.erase(id_iterator); 
             return;
         }
 
         long original_word_snapshot_when_bp_set = bp_data_iterator->second; 
         
-        if (child_pid_ > 0 && program_loaded_) { // Ensure child is alive
+        if (child_pid_ > 0 && program_loaded_) { 
             errno = 0;
-            long current_word_in_memory_at_bp = peek_text(addr_to_delete); // Read current memory (should have 0xCC)
+            long current_word_in_memory_at_bp = peek_text(addr_to_delete); 
 
-            if (errno == 0) { // Successfully read current memory
-                // Restore only the original first byte, leaving other bytes (addr+1 to addr+7)
-                // as they are in current_word_in_memory, to preserve any patches made by 'patch' command.
+            if (errno == 0) { 
                 unsigned char original_first_byte_of_instruction = (unsigned char)(original_word_snapshot_when_bp_set & 0xFFL);
                 long word_to_restore_to_memory = (current_word_in_memory_at_bp & ~0xFFL) | original_first_byte_of_instruction;
                 poke_text(addr_to_delete, word_to_restore_to_memory);
             } else if (errno != ESRCH) { 
-                // Peek failed for a reason other than child death (e.g. EIO, EFAULT).
-                // Try restoring the full original word snapshot as a fallback.
                 poke_text(addr_to_delete, original_word_snapshot_when_bp_set);
             }
-            // If errno was ESRCH from peek_text, child_pid_ might have been set to -1.
-            // No further poke needed if child is gone. poke_text itself handles ESRCH.
         }
 
-        breakpoints_map_.erase(bp_data_iterator); // Remove from main breakpoint data map
-        breakpoint_id_to_addr_.erase(id_iterator); // Remove from ID map
+        breakpoints_map_.erase(bp_data_iterator); 
+        breakpoint_id_to_addr_.erase(id_iterator); 
         std::cout << "** delete breakpoint " << id << "." << std::endl;
     }
 
-    // Patches memory at a given address with a hex string
     void patch_memory(const std::string& addr_str, const std::string& hex_values_str) {
         if (!program_loaded_ || child_pid_ <= 0) { return; }
         unsigned long long start_patch_addr;
         try { start_patch_addr = hex_to_ullong(addr_str); } 
         catch (const std::exception& e) { std::cout << "** the target address is not valid." << std::endl; return; }
 
-        // Validate hex string format and length
         if (hex_values_str.length() % 2 != 0 || hex_values_str.length() > 2048 || hex_values_str.empty()) {
             std::cout << "** the target address is not valid (invalid hex string format/length)." << std::endl; return;
         }
 
-        // Convert hex string to bytes
         std::vector<unsigned char> bytes_to_write_to_memory;
         for (size_t i = 0; i < hex_values_str.length(); i += 2) {
             std::string byte_hex_str = hex_values_str.substr(i, 2);
@@ -1227,88 +1130,72 @@ public:
             } 
             catch (const std::exception& e) { std::cout << "** the target address is not valid (invalid hex char in string)." << std::endl; return; }
         }
-        if (bytes_to_write_to_memory.empty() && !hex_values_str.empty()){ // Should be caught by stoul errors
+        if (bytes_to_write_to_memory.empty() && !hex_values_str.empty()){ 
              std::cout << "** the target address is not valid (hex string parsing failed)." << std::endl; return;
         }
         
-        // Check validity of the memory range to be patched by peeking first and last byte's word
         if (!bytes_to_write_to_memory.empty() && child_pid_ > 0) {
             errno = 0;
-            peek_text(start_patch_addr); // Check readability of the start address
+            peek_text(start_patch_addr); 
             if (errno != 0) { std::cout << "** the target address is not valid." << std::endl; return; }
-            if (bytes_to_write_to_memory.size() > 1) { // If patching more than one byte
+            if (bytes_to_write_to_memory.size() > 1) { 
                 errno = 0;
-                peek_text(start_patch_addr + bytes_to_write_to_memory.size() - 1); // Check readability of the end address
+                peek_text(start_patch_addr + bytes_to_write_to_memory.size() - 1); 
                  if (errno != 0) { std::cout << "** the target address is not valid." << std::endl; return; }
             }
-        } else if (bytes_to_write_to_memory.empty()) { // Patching with empty string
-            std::cout << "** patch memory at 0x" << std::hex << start_patch_addr << "." << std::dec << std::endl; // No-op success
+        } else if (bytes_to_write_to_memory.empty()) { 
+            std::cout << "** patch memory at 0x" << std::hex << start_patch_addr << "." << std::dec << std::endl; 
             return;
         }
 
-        // Perform the patch byte by byte
         for (size_t i = 0; i < bytes_to_write_to_memory.size(); ++i) {
-            if (child_pid_ <=0 ) { // Check at each byte if child died
+            if (child_pid_ <=0 ) { 
                 std::cout << "** target program terminated during patch." << std::endl; return;
             }
             unsigned long long current_byte_addr_being_patched = start_patch_addr + i;
             unsigned char byte_value_for_patch = bytes_to_write_to_memory[i];
 
-            // Update the 'original_data' snapshot of any breakpoint whose word-span covers this byte.
-            // This ensures that if the BP is hit and its original instruction restored, it restores the *patched* byte.
-            for (auto& bp_entry : breakpoints_map_) { // Iterate by reference to modify map values
+            for (auto& bp_entry : breakpoints_map_) { 
                 unsigned long long bp_start_address_in_map = bp_entry.first;
-                // Check if current_byte_addr_being_patched falls within the 8-byte span of this breakpoint's original_data word
                 if (current_byte_addr_being_patched >= bp_start_address_in_map && current_byte_addr_being_patched < bp_start_address_in_map + sizeof(long)) {
-                    long modified_original_data_snapshot = bp_entry.second; // Get a copy of the original word for this BP
+                    long modified_original_data_snapshot = bp_entry.second; 
                     int offset_within_snapshot = current_byte_addr_being_patched - bp_start_address_in_map;
                     ((unsigned char*)&modified_original_data_snapshot)[offset_within_snapshot] = byte_value_for_patch;
-                    breakpoints_map_[bp_start_address_in_map] = modified_original_data_snapshot; // Update the map
+                    breakpoints_map_[bp_start_address_in_map] = modified_original_data_snapshot; 
                 }
             }
 
-            // Write the patch to live memory.
-            // If current_byte_addr_being_patched is the start of a breakpoint, the 0xCC is in memory.
-            // The spec: "breakpoint should still exist, but the original instruction should be patched."
-            // This means the *snapshot* (original_data) is patched. The 0xCC in memory should remain.
             if (breakpoints_map_.count(current_byte_addr_being_patched)) {
-                // This address is the start of a breakpoint. The 0xCC is in memory.
-                // Its original_data snapshot was updated above. Do not poke memory here to preserve 0xCC.
             } else {
-                // This address is NOT the start of a breakpoint. Patch memory directly.
                 unsigned long long word_aligned_addr_for_poke = current_byte_addr_being_patched & ~(sizeof(long)-1);
                 int byte_offset_in_word_for_poke = current_byte_addr_being_patched % sizeof(long);
 
                 errno = 0;
                 long current_memory_word_val = peek_text(word_aligned_addr_for_poke);
-                if (errno != 0 && current_memory_word_val == -1L) { // Read failed
+                if (errno != 0 && current_memory_word_val == -1L) { 
                     std::cout << "** the target address is not valid (read failed during patch)." << std::endl;
-                    // Atomicity of the whole patch string is not required by spec. Stop on first error.
                     return; 
                 }
 
-                ((unsigned char*)&current_memory_word_val)[byte_offset_in_word_for_poke] = byte_value_for_patch; // Modify the byte
-                poke_text(word_aligned_addr_for_poke, current_memory_word_val); // Write back the modified word
-                if (errno == ESRCH && child_pid_ > 0) { // Child died during poke
-                     // poke_text already sets child_pid_ = -1 and program_loaded_ = false
+                ((unsigned char*)&current_memory_word_val)[byte_offset_in_word_for_poke] = byte_value_for_patch; 
+                poke_text(word_aligned_addr_for_poke, current_memory_word_val); 
+                if (errno == ESRCH && child_pid_ > 0) { 
                      std::cout << "** the target address is not valid (write failed during patch, child died)." << std::endl;
                      return;
                 }
             }
         }
-        // If loop completed and child is still alive
         if (child_pid_ > 0) { 
             std::cout << "** patch memory at 0x" << std::hex << start_patch_addr << "." << std::dec << std::endl;
         }
     }
 };
 
-// Main function: creates Debugger instance and starts it.
 int main(int argc, char *argv[]) {
     Debugger sdb;
-    if (argc > 1) { // If program path is given as argument
+    if (argc > 1) { 
         sdb.run(argv[1]);
-    } else { // Start debugger without an initial program
+    } else { 
         sdb.run();
     }
     return 0;
