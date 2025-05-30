@@ -645,7 +645,7 @@ void Debugger::disassemble_instructions(unsigned long long start_address, int co
             std::cout << "      " << std::hex << capstone_insn_array[i].address << ": " << std::dec; 
             std::stringstream bytes_ss;
             for (size_t j = 0; j < capstone_insn_array[i].size; ++j) {
-                bytes_ss << std::setw(2) << std::setfill('0') << std::hex << (int)capstone_insn_array[i].bytes[j] << (j < capstone_insn_array[i].size - 1 ? " " : "");
+                bytes_ss << std::setw(2) << std::setfill('0') << std::hex << (int)capstone_insn_array[i].bytes[j] << (j < static_cast<size_t>(capstone_insn_array[i].size) - 1 ? " " : "");
             }
             // Adjusted setw for better alignment based on sample output
             std::cout << std::left << std::setw(32) << bytes_ss.str() << " " 
