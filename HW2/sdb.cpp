@@ -1,4 +1,3 @@
-// sdb.cpp
 #include <iostream>
 #include <vector>
 #include <string>
@@ -7,23 +6,21 @@
 #include <algorithm>
 #include <map>
 #include <fstream>
-#include <cstring>  // For strsignal, strlen, etc.
-#include <cstdlib>  // For realpath, exit, stoll, stoi, strdup, free
-#include <limits.h> // For PATH_MAX
-#include <cerrno>   // For errno
-
+#include <cstring>
+#include <cstdlib>
+#include <limits.h>
+#include <cerrno>
 #include <sys/ptrace.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <sys/user.h> // For user_regs_struct
-#include <unistd.h>   // For fork, exec, readlink, getpid etc.
-#include <signal.h>   // For siginfo_t, SIGTRAP etc. Needed for PTRACE_GETSIGINFO
+#include <sys/user.h>
+#include <unistd.h>
+#include <signal.h>
 #include <elf.h>
 #include <capstone/capstone.h>
-#include <fcntl.h>    // For open
+#include <fcntl.h>
 
 
-// Helper to split string by delimiter
 std::vector<std::string> split_string(const std::string& s, char delimiter) {
     std::vector<std::string> tokens;
     std::string token;
@@ -58,19 +55,19 @@ private:
     unsigned long long text_segment_elf_va_;
     unsigned long long text_segment_size_;
     unsigned long long text_segment_start_;
-    unsigned long long was_stopped_at_breakpoint_addr_; // Addr of BP that was hit, original byte restored, rip set to it.
+    unsigned long long was_stopped_at_breakpoint_addr_;
 
-    struct user_regs_struct regs_; // Cached registers
+    struct user_regs_struct regs_;
     int status_;
 
-    std::map<unsigned long long, unsigned char> breakpoints_map_; // Addr -> original_byte
-    std::map<int, unsigned long long> breakpoint_id_to_addr_; // User-facing ID -> Addr
+    std::map<unsigned long long, unsigned char> breakpoints_map_;
+    std::map<int, unsigned long long> breakpoint_id_to_addr_;
     int next_breakpoint_id_;
 
     csh capstone_handle_;
     std::vector<std::pair<unsigned long long, unsigned long long>> executable_regions_;
 
-    bool in_syscall_entry_; // True if next syscall event is an entry, false if it's an exit.
+    bool in_syscall_entry_;
     std::string current_command_;
     bool is_pie_or_dyn_cached_;
 
@@ -87,13 +84,13 @@ private:
     void kill_program();
     long peek_text(unsigned long long addr);
     void poke_text(unsigned long long addr, long data);
-    void get_registers_from_child(); // Renamed to be explicit
-    void set_registers_in_child();   // Renamed to be explicit
+    void get_registers_from_child();
+    void set_registers_in_child();
     bool is_address_in_executable_region(unsigned long long addr);
     void parse_elf_and_get_abs_entry(const char* program_file_path);
     void load_program_internal(char** argv_for_exec);
     void disassemble_instructions(unsigned long long start_address, int count);
-    void handle_wait_status(); // Generic handler
+    void handle_wait_status();
     void step_instruction();
     void continue_execution();
     void handle_syscall_command();
@@ -145,13 +142,13 @@ Debugger::~Debugger() {
 }
 
 void Debugger::run(const std::string& initial_program_path_arg) {
-    if (setvbuf(stdout, nullptr, _IONBF, 0) != 0) { /* Non-critical error for stdout */ }
-    if (setvbuf(stdin, nullptr, _IONBF, 0) != 0) { /* Non-critical error for stdin */ }
+    // Input/Output Not Buffered
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    setvbuf(stdin, nullptr, _IONBF, 0);
 
     if (!initial_program_path_arg.empty()) {
         user_program_path_display_ = initial_program_path_arg;
         char* prog_name_c_str = strdup(user_program_path_display_.c_str());
-        if (!prog_name_c_str) { std::cerr << "** Memory allocation failed for program name." << std::endl; return; }
         char* argv_for_load[] = {prog_name_c_str, nullptr};
         load_program_internal(argv_for_load);
         free(prog_name_c_str);
@@ -374,30 +371,36 @@ void Debugger::refresh_executable_regions() {
 
 void Debugger::parse_elf_and_get_abs_entry(const char* program_file_path) {
     std::ifstream elf_file(program_file_path, std::ios::binary);
-    if (!elf_file) { /* ... */ return; }
-    Elf64_Ehdr ehdr;
-    elf_file.read(reinterpret_cast<char*>(&ehdr), sizeof(ehdr));
-    if (elf_file.gcount() != static_cast<long>(sizeof(ehdr)) ||
-        !(ehdr.e_ident[EI_MAG0] == ELFMAG0 && ehdr.e_ident[EI_MAG1] == ELFMAG1 &&
-          ehdr.e_ident[EI_MAG2] == ELFMAG2 && ehdr.e_ident[EI_MAG3] == ELFMAG3)) {
-        /* ... */ elf_file.close(); return;
+    if (!elf_file) { 
+        return;
     }
-    entry_point_from_elf_ = ehdr.e_entry;
+    Elf64_Ehdr ehdr;
+    elf_file.read(reinterpret_cast<char*>(&ehdr), sizeof(ehdr)); // 讀取elf file header
+    if (elf_file.gcount() != static_cast<long>(sizeof(ehdr)) || // 檢查是否讀到完整header
+        !(ehdr.e_ident[EI_MAG0] == ELFMAG0 && ehdr.e_ident[EI_MAG1] == ELFMAG1 && // 驗證ELF Identification 0x7f, 'E', 'L', 'F'
+          ehdr.e_ident[EI_MAG2] == ELFMAG2 && ehdr.e_ident[EI_MAG3] == ELFMAG3)) {
+        elf_file.close(); 
+        return;
+    }
+    entry_point_from_elf_ = ehdr.e_entry; // entry point offset
     is_pie_or_dyn_cached_ = (ehdr.e_type == ET_DYN);
-    text_segment_elf_va_ = 0; text_segment_size_ = 0;
-    if (ehdr.e_shoff != 0 && ehdr.e_shstrndx != SHN_UNDEF && ehdr.e_shstrndx < ehdr.e_shnum) {
-        elf_file.seekg(ehdr.e_shoff, std::ios::beg);
-        std::vector<Elf64_Shdr> shdrs(ehdr.e_shnum);
-        elf_file.read(reinterpret_cast<char*>(shdrs.data()), ehdr.e_shnum * sizeof(Elf64_Shdr));
+    text_segment_elf_va_ = 0;
+    text_segment_size_ = 0;
+    if (ehdr.e_shoff != 0 && ehdr.e_shstrndx != SHN_UNDEF && ehdr.e_shstrndx < ehdr.e_shnum) { // ehdr.e_shstrndx : Section Header String Table Index
+        elf_file.seekg(ehdr.e_shoff, std::ios::beg); // 移到Section Header Table的起始位子 (ehdr.e_shoff是 Section Header Table的offset)
+        std::vector<Elf64_Shdr> shdrs(ehdr.e_shnum); // 用來存所有section header
+        elf_file.read(reinterpret_cast<char*>(shdrs.data()), ehdr.e_shnum * sizeof(Elf64_Shdr)); // read Section Header Table
         if (elf_file.gcount() == static_cast<long>(ehdr.e_shnum * sizeof(Elf64_Shdr)) &&
             shdrs[ehdr.e_shstrndx].sh_size > 0 && ehdr.e_shstrndx < shdrs.size() && shdrs[ehdr.e_shstrndx].sh_type == SHT_STRTAB) {
-            std::vector<char> shstrtab_data(shdrs[ehdr.e_shstrndx].sh_size);
-            elf_file.seekg(shdrs[ehdr.e_shstrndx].sh_offset, std::ios::beg);
+            std::vector<char> shstrtab_data(shdrs[ehdr.e_shstrndx].sh_size); // 用來存Section Header String Table
+            elf_file.seekg(shdrs[ehdr.e_shstrndx].sh_offset, std::ios::beg); // 跳到Section Header String Table的真正位子
             elf_file.read(shstrtab_data.data(), shdrs[ehdr.e_shstrndx].sh_size);
             if (elf_file.gcount() == static_cast<long>(shdrs[ehdr.e_shstrndx].sh_size)) {
                 for (const auto& sh : shdrs) {
-                    if (sh.sh_name < shstrtab_data.size() && strcmp(&shstrtab_data[sh.sh_name], ".text") == 0) {
-                        text_segment_elf_va_ = sh.sh_addr; text_segment_size_ = sh.sh_size; break;
+                    if (sh.sh_name < shstrtab_data.size() && strcmp(&shstrtab_data[sh.sh_name], ".text") == 0) {  // 紀錄.text區段的位子和size
+                        text_segment_elf_va_ = sh.sh_addr; 
+                        text_segment_size_ = sh.sh_size; 
+                        break;
                     }
                 }
             }
@@ -413,7 +416,8 @@ void Debugger::parse_elf_and_get_abs_entry(const char* program_file_path) {
     std::string symlink_path_base = "/proc/" + std::to_string(child_pid_) + "/exe";
     ssize_t len_symlink_base = readlink(symlink_path_base.c_str(), exe_path_buf_base, PATH_MAX);
     if (len_symlink_base != -1) {
-        exe_path_buf_base[len_symlink_base] = '\0'; proc_exe_path_cached_ = std::string(exe_path_buf_base);
+        exe_path_buf_base[len_symlink_base] = '\0'; 
+        proc_exe_path_cached_ = std::string(exe_path_buf_base);
     }
     unsigned long long lowest_map_start_addr_for_exe = -1ULL;
     while(std::getline(maps_file_base, line_map_parser_base)){
@@ -432,8 +436,8 @@ void Debugger::parse_elf_and_get_abs_entry(const char* program_file_path) {
         if(path_matches_target_base){
             try {
                 unsigned long long map_offset_base = hex_to_ullong(offset_str_map_base);
-                if(map_offset_base == 0){
-                    unsigned long long start_addr_map_segment_base = hex_to_ullong(addr_range_map_base.substr(0, addr_range_map_base.find('-')));
+                if(map_offset_base == 0){ // 找到offset為0的區段
+                    unsigned long long start_addr_map_segment_base = hex_to_ullong(addr_range_map_base.substr(0, addr_range_map_base.find('-')));  // 真正的起始位子
                     if(lowest_map_start_addr_for_exe == (unsigned long long)-1LL || start_addr_map_segment_base < lowest_map_start_addr_for_exe){
                         lowest_map_start_addr_for_exe = start_addr_map_segment_base;
                     }
@@ -441,56 +445,33 @@ void Debugger::parse_elf_and_get_abs_entry(const char* program_file_path) {
             } catch(...) { /* ignore parsing errors */ }
         }
     }
-    if (lowest_map_start_addr_for_exe != (unsigned long long)-1LL) base_address_ = lowest_map_start_addr_for_exe;
-    maps_file_base.close();
-    if (is_pie_or_dyn_cached_) {
-        actual_loaded_entry_point_ = base_address_ + entry_point_from_elf_; load_offset_ = base_address_;
-    } else {
-        actual_loaded_entry_point_ = entry_point_from_elf_; load_offset_ = 0;
+    if (lowest_map_start_addr_for_exe != (unsigned long long)-1LL) {
+        base_address_ = lowest_map_start_addr_for_exe;
     }
-    if (text_segment_elf_va_ != 0 && text_segment_size_ != 0) {
+    maps_file_base.close();
+    // 計算entry point的address
+    if (is_pie_or_dyn_cached_) {
+        actual_loaded_entry_point_ = base_address_ + entry_point_from_elf_;
+        load_offset_ = base_address_;
+    } 
+    else {
+        actual_loaded_entry_point_ = entry_point_from_elf_; 
+        load_offset_ = 0;
+    }
+    if (text_segment_elf_va_ != 0 && text_segment_size_ != 0) { // 在elf segment header有找到.text的資訊
          text_segment_start_ = text_segment_elf_va_ + load_offset_;
-    } else if (actual_loaded_entry_point_ != 0) {
-        bool found_entry_region = false;
-        std::ifstream maps_file_fallback(maps_path_for_base);
-        std::string line_fallback;
-        while(std::getline(maps_file_fallback, line_fallback)) {
-            std::stringstream ss_fb(line_fallback);
-            std::string range_fb, perms_fb, offset_fb, dev_fb, inode_fb, path_fb;
-            ss_fb >> range_fb >> perms_fb >> offset_fb >> dev_fb >> inode_fb;
-            std::getline(ss_fb, path_fb);
-            if (!path_fb.empty() && path_fb.front() == ' ') path_fb.erase(0, path_fb.find_first_not_of(" "));
-            bool path_matches_fb = false;
-            if (!path_fb.empty() && (path_fb == current_program_path_ || (!proc_exe_path_cached_.empty() && path_fb == proc_exe_path_cached_) ) ) {
-                path_matches_fb = true;
-            }
-            if(path_matches_fb && perms_fb.find('x') != std::string::npos) {
-                size_t hyphen_pos = range_fb.find('-');
-                if (hyphen_pos != std::string::npos) {
-                    try {
-                        unsigned long long region_start = hex_to_ullong(range_fb.substr(0, hyphen_pos));
-                        unsigned long long region_end = hex_to_ullong(range_fb.substr(hyphen_pos + 1));
-                        if (actual_loaded_entry_point_ >= region_start && actual_loaded_entry_point_ < region_end) {
-                            text_segment_start_ = region_start; text_segment_size_ = region_end - region_start;
-                            found_entry_region = true; break;
-                        }
-                    } catch (...) {/*continue*/}
-                }
-            }
-        }
-        maps_file_fallback.close();
-        if (!found_entry_region) {
-            text_segment_start_ = base_address_ != 0 ? base_address_ : (actual_loaded_entry_point_ & ~(0xFFFULL));
-            text_segment_size_ = 0x2000;
-        }
-    } else {
-        text_segment_start_ = base_address_; text_segment_size_ = 0;
+    } 
+    else {
+        text_segment_start_ = base_address_; 
+        text_segment_size_ = 0;
     }
     refresh_executable_regions();
 }
 
 void Debugger::load_program_internal(char** argv_for_exec) {
-    if (program_loaded_) { kill_program(); }
+    if (program_loaded_) { 
+        kill_program();
+    }
     entry_point_from_elf_ = 0; actual_loaded_entry_point_ = 0; base_address_ = 0; load_offset_ = 0;
     text_segment_elf_va_ = 0; text_segment_size_ = 0; text_segment_start_ = 0; executable_regions_.clear();
     breakpoints_map_.clear(); breakpoint_id_to_addr_.clear(); next_breakpoint_id_ = 0;
@@ -499,30 +480,51 @@ void Debugger::load_program_internal(char** argv_for_exec) {
     memset(&regs_, 0, sizeof(regs_));
     user_program_path_display_ = argv_for_exec[0];
     char abs_program_path_buf[PATH_MAX];
-    if (realpath(argv_for_exec[0], abs_program_path_buf) == NULL) {
+    if (realpath(argv_for_exec[0], abs_program_path_buf) == NULL) {  // get absolute path
         current_program_path_ = argv_for_exec[0];
-    } else {
+    } 
+    else {
         current_program_path_ = abs_program_path_buf;
     }
     child_pid_ = fork();
-    if (child_pid_ < 0) { perror("** fork failed"); program_loaded_ = false; return; }
+    if (child_pid_ < 0) { 
+        perror("** fork failed"); 
+        program_loaded_ = false; 
+        return; 
+    }
     if (child_pid_ == 0) {
-        if (ptrace(PTRACE_TRACEME, 0, nullptr, nullptr) < 0) { perror("** ptrace(TRACEME) failed"); _exit(EXIT_FAILURE); }
+        if (ptrace(PTRACE_TRACEME, 0, nullptr, nullptr) < 0) {  // tell parent to start tracing
+            perror("** ptrace(TRACEME) failed"); 
+            _exit(EXIT_FAILURE); 
+        }
         std::string prog_path_str = user_program_path_display_;
         size_t last_slash = prog_path_str.rfind('/');
         if (last_slash != std::string::npos) {
             std::string dir = prog_path_str.substr(0, last_slash);
             if (!dir.empty() && chdir(dir.c_str()) != 0) {
-                 // perror("** chdir in child failed");
+                //perror("** chdir in child failed");
             }
         }
-        if (execvp(current_program_path_.c_str(), argv_for_exec) < 0) { perror("** execvp failed"); _exit(EXIT_FAILURE); }
-    } else {
-        if (waitpid(child_pid_, &status_, 0) < 0) { perror("** waitpid failed"); program_loaded_ = false; child_pid_ = -1; return;}
-        if (!WIFSTOPPED(status_)) {
-            std::cerr << "** Program '" << user_program_path_display_ << "' failed to start or exited/signaled immediately." << std::endl;
-            child_pid_ = -1; program_loaded_ = false; return;
+        if (execvp(current_program_path_.c_str(), argv_for_exec) < 0) { 
+            perror("** execvp failed"); 
+            _exit(EXIT_FAILURE); 
         }
+    } 
+    else {
+        if (waitpid(child_pid_, &status_, 0) < 0) { 
+            perror("** waitpid failed"); 
+            program_loaded_ = false; 
+            child_pid_ = -1; 
+            return;
+        }
+        if (!WIFSTOPPED(status_)) { // check if child is stopped by signal
+            std::cerr << "** Program '" << user_program_path_display_ << "' failed to start or exited/signaled immediately." << std::endl;
+            child_pid_ = -1; 
+            program_loaded_ = false; 
+            return;
+        }
+        // set ptrace options
+        // PTRACE_O_TRACESYSGOOD : 區分是不是由syscall造成的停止
         if (ptrace(PTRACE_SETOPTIONS, child_pid_, 0, PTRACE_O_EXITKILL | PTRACE_O_TRACESYSGOOD) < 0) {
             // perror("** ptrace(PTRACE_SETOPTIONS) failed");
         }
@@ -990,26 +992,19 @@ void Debugger::print_registers() {
         return; 
     }
 
-    char reg_print_buf[40]; // Buffer for a single register string like "$rax 0x0123..."
+    char reg_print_buf[40];
 
-    // Helper lambda to format and print one register entry for a row
-    // Takes the buffer, name, value, and a flag if it's the last on the line
     auto print_one_reg_entry = [&](const char* name, unsigned long long val, bool is_last_on_line) {
-        // Ensure name is padded correctly to align '0x'
         char name_padded[10];
         strncpy(name_padded, name, 9);
-        name_padded[9] = '\0'; // Ensure null termination
-        
-        // Pad with spaces if name is short (e.g., $r8, $r9)
-        // Target length for name part before " 0x" could be around 7 (for $eflags)
-        // $rax (4), $rbp (4), $r8 (3), $r9 (3), $r10 (4), $eflags (7)
-        // Let's use a fixed width for the name part in sprintf, e.g., -7s for left alignment
+        name_padded[9] = '\0';
         
         sprintf(reg_print_buf, "%-4s 0x%016llx", name, val); 
         std::cout << reg_print_buf;
         if (!is_last_on_line) {
-            std::cout << "    "; // Separator between columns
-        } else {
+            std::cout << "    ";
+        } 
+        else {
             std::cout << std::endl;
         }
     };
@@ -1188,12 +1183,12 @@ void Debugger::patch_memory(const std::string& addr_str, const std::string& hex_
     }
 }
 
-
 int main(int argc, char *argv[]) {
     Debugger sdb;
     if (argc > 1) {
         sdb.run(argv[1]);
-    } else {
+    } 
+    else {
         sdb.run();
     }
     return 0;
