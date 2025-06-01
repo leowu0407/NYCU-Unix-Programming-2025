@@ -71,10 +71,6 @@ private:
     std::string current_command_;
     bool is_pie_or_dyn_cached_;
 
-    void refresh_executable_regions();
-    void handle_program_termination();
-
-
 public:
     Debugger();
     ~Debugger();
@@ -105,6 +101,9 @@ private:
     void restore_original_byte_at_bp(unsigned long long bp_addr, unsigned char original_byte);
     void rearm_breakpoint(unsigned long long bp_addr);
     void process_breakpoint_hit(unsigned long long bp_addr);
+
+    void refresh_executable_regions();
+    void handle_program_termination();
 
 };
 
@@ -158,7 +157,9 @@ void Debugger::run(const std::string& initial_program_path_arg) {
     while (true) {
         std::cout << "(sdb) " << std::flush;
         if (!std::getline(std::cin, line)) {
-            if (child_pid_ > 0) kill_program();
+            if (child_pid_ > 0) {
+                kill_program();
+            }
             break;
         }
 
@@ -170,7 +171,9 @@ void Debugger::run(const std::string& initial_program_path_arg) {
         current_command_ = args[0];
 
         if (current_command_ == "load") {
-            if (child_pid_ > 0) kill_program();
+            if (child_pid_ > 0) {
+                kill_program();
+            }
 
             if (args.size() < 2) {
                 std::cerr << "** Usage: load [path to program]" << std::endl;
@@ -203,8 +206,8 @@ void Debugger::run(const std::string& initial_program_path_arg) {
         }
         else {
             if (child_pid_ == -1 && (WIFEXITED(status_) || WIFSIGNALED(status_))) {
-                 program_loaded_ = false;
-                 continue;
+                program_loaded_ = false;
+                continue;
             }
 
             if (current_command_ == "si") {
@@ -297,8 +300,8 @@ void Debugger::kill_program() {
         }
 
         if (child_pid_ > 0) {
-             ptrace(PTRACE_KILL, child_pid_, nullptr, nullptr);
-             waitpid(child_pid_, nullptr, 0);
+            ptrace(PTRACE_KILL, child_pid_, nullptr, nullptr);
+            waitpid(child_pid_, nullptr, 0);
         }
     }
 
@@ -657,28 +660,31 @@ void Debugger::disassemble_instructions(unsigned long long start_address, int co
     unsigned long long current_addr_for_mem_read = start_address;
     size_t target_bytes_to_read_for_disassembly = MAX_INSTR_BYTES_PER_INS * (count + 2);
 
+    // 從child讀取指令
     for (size_t total_bytes_copied_to_buffer = 0; total_bytes_copied_to_buffer < target_bytes_to_read_for_disassembly; ) {
-        if (child_pid_ <=0 || !program_loaded_) {
+        if (child_pid_ <= 0 || !program_loaded_) {
             break;
         }
-        if (total_bytes_copied_to_buffer > 0 && !is_address_in_executable_region(current_addr_for_mem_read) && current_addr_for_mem_read !=0) {
+        if (total_bytes_copied_to_buffer > 0 && !is_address_in_executable_region(current_addr_for_mem_read) && current_addr_for_mem_read != 0) {
             break;
         }
-        unsigned long long aligned_read_addr = current_addr_for_mem_read & ~(sizeof(long)-1);
+        unsigned long long aligned_read_addr = current_addr_for_mem_read & ~(sizeof(long)-1); // 對齊
         long memory_word_data = peek_text(aligned_read_addr);
         if (errno != 0 && memory_word_data == -1L) { 
             break;
         }
 
         for (size_t byte_idx_in_word = 0; byte_idx_in_word < sizeof(long); ++byte_idx_in_word) {
-            if (total_bytes_copied_to_buffer >= target_bytes_to_read_for_disassembly) break;
+            if (total_bytes_copied_to_buffer >= target_bytes_to_read_for_disassembly) {
+                break;
+            }
             unsigned long long actual_byte_address_in_memory = aligned_read_addr + byte_idx_in_word;
-            if (actual_byte_address_in_memory < start_address && total_bytes_copied_to_buffer == 0) {
+            if (actual_byte_address_in_memory < start_address && total_bytes_copied_to_buffer == 0) { // 跳過start address前的byte
                 continue;
             }
             unsigned char byte_value_from_memory = ((unsigned char*)&memory_word_data)[byte_idx_in_word];
             auto bp_iterator = breakpoints_map_.find(actual_byte_address_in_memory);
-            if (bp_iterator != breakpoints_map_.end()) {
+            if (bp_iterator != breakpoints_map_.end()) { // 有brerakpoint則要替換為原本的byte
                 instruction_bytes_buffer.push_back(bp_iterator->second);
             } 
             else {
@@ -700,6 +706,7 @@ void Debugger::disassemble_instructions(unsigned long long start_address, int co
     }
 
     cs_insn *capstone_insn_array;
+    // disassemble
     size_t num_insns_disassembled_by_capstone = cs_disasm(capstone_handle_,
                                                           instruction_bytes_buffer.data(),
                                                           instruction_bytes_buffer.size(),
@@ -709,7 +716,7 @@ void Debugger::disassemble_instructions(unsigned long long start_address, int co
 
     if (num_insns_disassembled_by_capstone > 0) {
         for (size_t i = 0; i < num_insns_disassembled_by_capstone && instructions_displayed_count < static_cast<size_t>(count); ++i) {
-            if (!is_address_in_executable_region(capstone_insn_array[i].address) && capstone_insn_array[i].address != 0) {
+            if (!is_address_in_executable_region(capstone_insn_array[i].address) && capstone_insn_array[i].address != 0) { // 超出可執行範圍
                 if (!oor_message_printed_for_current_batch) {
                     if (instructions_displayed_count > 0 || i == 0) {
                         std::cout << "** the address is out of the range of the executable region." << std::endl;
@@ -723,13 +730,12 @@ void Debugger::disassemble_instructions(unsigned long long start_address, int co
             for (size_t j = 0; j < capstone_insn_array[i].size; ++j) {
                 bytes_ss << std::setw(2) << std::setfill('0') << std::hex << (int)capstone_insn_array[i].bytes[j] << (j < static_cast<size_t>(capstone_insn_array[i].size) - 1 ? " " : "");
             }
-            // Adjusted setw for better alignment based on sample output
             std::cout << std::left << std::setw(32) << bytes_ss.str() << " " 
                       << std::setw(9) << capstone_insn_array[i].mnemonic << " " 
                       << capstone_insn_array[i].op_str << std::endl;
             instructions_displayed_count++;
         }
-        cs_free(capstone_insn_array, num_insns_disassembled_by_capstone);
+        cs_free(capstone_insn_array, num_insns_disassembled_by_capstone); // 釋放 cs_disasm 動態分配的記憶體
     }
 
     if (instructions_displayed_count < static_cast<size_t>(count) && !oor_message_printed_for_current_batch) {
@@ -738,16 +744,18 @@ void Debugger::disassemble_instructions(unsigned long long start_address, int co
             cs_insn *temp_insn_array; // Need to re-disassemble to get the last instruction's end
             size_t temp_disassembled_count = cs_disasm(capstone_handle_, instruction_bytes_buffer.data(), instruction_bytes_buffer.size(), start_address, instructions_displayed_count, &temp_insn_array);
             if (temp_disassembled_count == instructions_displayed_count && temp_disassembled_count > 0) {
-                 next_addr_check = temp_insn_array[temp_disassembled_count - 1].address + temp_insn_array[temp_disassembled_count - 1].size;
+                next_addr_check = temp_insn_array[temp_disassembled_count - 1].address + temp_insn_array[temp_disassembled_count - 1].size;
             }
-            if (temp_disassembled_count > 0) cs_free(temp_insn_array, temp_disassembled_count);
+            if (temp_disassembled_count > 0) {
+                cs_free(temp_insn_array, temp_disassembled_count);
+            }
         } 
         else if (instructions_displayed_count == 0 && num_insns_disassembled_by_capstone == 0 && start_address != 0) {
             next_addr_check = start_address; 
         }
 
         if (!is_address_in_executable_region(next_addr_check) && next_addr_check != 0 && start_address !=0) {
-            if ( (instructions_displayed_count > 0) || (instructions_displayed_count == 0 && num_insns_disassembled_by_capstone == 0 && !instruction_bytes_buffer.empty()) ) { // Only print if we tried and failed for valid start
+            if ( (instructions_displayed_count > 0) || (instructions_displayed_count == 0 && num_insns_disassembled_by_capstone == 0 && !instruction_bytes_buffer.empty()) ) {
                  std::cout << "** the address is out of the range of the executable region." << std::endl;
             }
         }
@@ -787,7 +795,9 @@ void Debugger::restore_original_byte_at_bp(unsigned long long bp_addr, unsigned 
 }
 
 void Debugger::rearm_breakpoint(unsigned long long bp_addr) {
-    if (child_pid_ <= 0 || !program_loaded_ || !breakpoints_map_.count(bp_addr)) return;
+    if (child_pid_ <= 0 || !program_loaded_ || !breakpoints_map_.count(bp_addr)) {
+        return;
+    }
     unsigned long long aligned_addr = bp_addr & ~(sizeof(long) - 1);
     int byte_offset = bp_addr % sizeof(long);
     long word_val = peek_text(aligned_addr);
@@ -841,24 +851,28 @@ void Debugger::handle_wait_status() {
     }
 
     if (WIFSTOPPED(status_)) {
-        if (child_pid_ > 0 && program_loaded_) { refresh_executable_regions(); }
+        if (child_pid_ > 0 && program_loaded_) { 
+            refresh_executable_regions();
+        }
         get_registers_from_child(); 
-        if (!program_loaded_) return; 
+        if (!program_loaded_) {
+            return; 
+        }
 
         unsigned long long current_rip_for_handler = regs_.rip;
         int stop_signal = WSTOPSIG(status_);
 
         if (stop_signal == SIGTRAP) {
-            unsigned long long potential_bp_addr = current_rip_for_handler - 1; 
-            if (breakpoints_map_.count(potential_bp_addr)) {
+            unsigned long long potential_bp_addr = current_rip_for_handler - 1;
+            if (breakpoints_map_.count(potential_bp_addr)) { // hit breakpoint
                 process_breakpoint_hit(potential_bp_addr);
             } 
             else {
                 disassemble_instructions(current_rip_for_handler, 5);
             }
-        } 
-        else if (stop_signal == (SIGTRAP | 0x80)) { 
-            unsigned long long syscall_instr_addr = current_rip_for_handler - 2; 
+        }
+        else if (stop_signal == (SIGTRAP | 0x80)) { //系統呼叫syscall
+            unsigned long long syscall_instr_addr = current_rip_for_handler - 2; // syscall : 0F 05, 這裡是讓address回到指向syscall
             long syscall_number = regs_.orig_rax;
             if (in_syscall_entry_) {
                  std::cout << "** enter a syscall(" << std::dec << syscall_number << ") at 0x" << std::hex << syscall_instr_addr << "." << std::dec << std::endl;
@@ -868,7 +882,7 @@ void Debugger::handle_wait_status() {
             }
             disassemble_instructions(syscall_instr_addr, 5);
         } 
-        else if (stop_signal == SIGWINCH) {
+        else if (stop_signal == SIGWINCH) { // Window Change signal: 是終端機視窗大小改變時發送的信號
             if (program_loaded_ && child_pid_ > 0) {
                 ptrace(PTRACE_CONT, child_pid_, nullptr, (void*)((long)stop_signal));
                 if (waitpid(child_pid_, &status_, 0) < 0 ) { 
@@ -898,12 +912,12 @@ void Debugger::step_instruction() {
     unsigned long long rip_start_of_si = regs_.rip;
     unsigned long long bp_addr_stepped_off = 0;
 
-    if (was_stopped_at_breakpoint_addr_ == rip_start_of_si && was_stopped_at_breakpoint_addr_ != 0) {
-        bp_addr_stepped_off = was_stopped_at_breakpoint_addr_;
+    if (was_stopped_at_breakpoint_addr_ == rip_start_of_si && was_stopped_at_breakpoint_addr_ != 0) { // 確認現在是否已經在breakpoint
+        bp_addr_stepped_off = was_stopped_at_breakpoint_addr_; // 紀錄breakpoint的位子，方便之後填回0xCC
     }
     was_stopped_at_breakpoint_addr_ = 0;
 
-    if (ptrace(PTRACE_SINGLESTEP, child_pid_, nullptr, nullptr) < 0) {
+    if (ptrace(PTRACE_SINGLESTEP, child_pid_, nullptr, nullptr) < 0) { //先執行breakpoint的這一個instruction
         if (errno == ESRCH) {
             handle_program_termination();
         }
@@ -923,7 +937,7 @@ void Debugger::step_instruction() {
     }
 
     if (bp_addr_stepped_off != 0) {
-        rearm_breakpoint(bp_addr_stepped_off);
+        rearm_breakpoint(bp_addr_stepped_off); // 重設breakpoint
     }
 
     if (WIFEXITED(status_) || WIFSIGNALED(status_)) {
@@ -937,10 +951,10 @@ void Debugger::step_instruction() {
         int stop_signal = WSTOPSIG(status_);
 
         if (stop_signal == SIGTRAP) {
-            if (breakpoints_map_.count(rip_after_si_step) && rip_after_si_step != bp_addr_stepped_off) { // Check if RIP is directly ON a BP
+            if (breakpoints_map_.count(rip_after_si_step) && rip_after_si_step != bp_addr_stepped_off) {
                 process_breakpoint_hit(rip_after_si_step);
             } 
-            else if (breakpoints_map_.count(rip_after_si_step -1) && (rip_after_si_step -1) != bp_addr_stepped_off) { // Check if RIP is one byte AFTER an INT3 of a different BP
+            else if (breakpoints_map_.count(rip_after_si_step -1) && (rip_after_si_step -1) != bp_addr_stepped_off) {
                 process_breakpoint_hit(rip_after_si_step - 1);
             }
             else {
@@ -954,12 +968,14 @@ void Debugger::step_instruction() {
 }
 
 void Debugger::continue_execution() {
-    if (!program_loaded_ || child_pid_ <= 0) return;
+    if (!program_loaded_ || child_pid_ <= 0) {
+        return;
+    }
     get_registers_from_child();
     unsigned long long rip_at_cont_start = regs_.rip;
     unsigned long long bp_addr_stepped_off_in_cont = 0;
 
-    if (was_stopped_at_breakpoint_addr_ == rip_at_cont_start && was_stopped_at_breakpoint_addr_ != 0) {
+    if (was_stopped_at_breakpoint_addr_ == rip_at_cont_start && was_stopped_at_breakpoint_addr_ != 0) { // 停在breakpoint
         bp_addr_stepped_off_in_cont = was_stopped_at_breakpoint_addr_;
         was_stopped_at_breakpoint_addr_ = 0;
 
@@ -984,7 +1000,7 @@ void Debugger::continue_execution() {
         }
 
         if (bp_addr_stepped_off_in_cont != 0) {
-            rearm_breakpoint(bp_addr_stepped_off_in_cont);
+            rearm_breakpoint(bp_addr_stepped_off_in_cont); // 重設breakpoint
         }
 
         status_ = temp_status;
@@ -999,7 +1015,7 @@ void Debugger::continue_execution() {
             int stop_sig_first_step = WSTOPSIG(status_);
 
             if (stop_sig_first_step == SIGTRAP) {
-                if (breakpoints_map_.count(rip_after_first_step) && rip_after_first_step != bp_addr_stepped_off_in_cont) {
+                if (breakpoints_map_.count(rip_after_first_step) && rip_after_first_step != bp_addr_stepped_off_in_cont) { // 檢查singlestep後是否遇到新的breakpoint
                     process_breakpoint_hit(rip_after_first_step);
                     return; 
                 } 
@@ -1041,12 +1057,14 @@ void Debugger::continue_execution() {
 
 
 void Debugger::handle_syscall_command() {
-    if (!program_loaded_ || child_pid_ <= 0) return;
+    if (!program_loaded_ || child_pid_ <= 0) {
+        return;
+    }
     get_registers_from_child();
     unsigned long long rip_before_cmd = regs_.rip;
     unsigned long long bp_addr_stepped_off_for_syscall = 0;
 
-    if (was_stopped_at_breakpoint_addr_ == rip_before_cmd && was_stopped_at_breakpoint_addr_ != 0) {
+    if (was_stopped_at_breakpoint_addr_ == rip_before_cmd && was_stopped_at_breakpoint_addr_ != 0) { // 檢查現在是否在breakpoint
         bp_addr_stepped_off_for_syscall = was_stopped_at_breakpoint_addr_;
         was_stopped_at_breakpoint_addr_ = 0;
 
@@ -1065,7 +1083,7 @@ void Debugger::handle_syscall_command() {
         }
 
         if (bp_addr_stepped_off_for_syscall != 0) {
-            rearm_breakpoint(bp_addr_stepped_off_for_syscall);
+            rearm_breakpoint(bp_addr_stepped_off_for_syscall); // 重設breakpoint
         }
         status_ = temp_status;
         if (WIFEXITED(status_) || WIFSIGNALED(status_)) {
@@ -1129,11 +1147,10 @@ void Debugger::handle_syscall_command() {
         } 
         else if (stop_signal == SIGTRAP) {
             unsigned long long potential_bp_addr = rip_at_syscall_event - 1;
-            if (breakpoints_map_.count(potential_bp_addr) && potential_bp_addr != bp_addr_stepped_off_for_syscall) {
+            if (breakpoints_map_.count(potential_bp_addr) && potential_bp_addr != bp_addr_stepped_off_for_syscall) {  // syscall前先遇到breakpoint
                 process_breakpoint_hit(potential_bp_addr);
             } 
             else {
-                 // If it's the same BP we just stepped off, or not a BP, just disassemble current location
                 disassemble_instructions(rip_at_syscall_event, 5);
             }
             in_syscall_entry_ = true;
@@ -1185,7 +1202,9 @@ void Debugger::print_registers() {
 }
 
 void Debugger::set_breakpoint_common(unsigned long long addr, bool is_rva_command) {
-    if (!program_loaded_ || child_pid_ <= 0) { return; }
+    if (!program_loaded_ || child_pid_ <= 0) { 
+        return; 
+    }
     bool is_valid_for_bp = is_address_in_executable_region(addr);
     if (!is_valid_for_bp && addr !=0) {
         errno = 0; 
@@ -1198,10 +1217,10 @@ void Debugger::set_breakpoint_common(unsigned long long addr, bool is_rva_comman
         std::cout << "** the target address is not valid." << std::endl; 
         return;
     }
-    for(const auto& id_addr_pair : breakpoint_id_to_addr_) {
+    for(const auto& id_addr_pair : breakpoint_id_to_addr_) { // 檢查breakpoint是否已經存在
         if(id_addr_pair.second == addr && breakpoints_map_.count(addr)) {
-             std::cout << "** set a breakpoint at 0x" << std::hex << addr << "." << std::dec << std::endl;
-             return;
+            std::cout << "** set a breakpoint at 0x" << std::hex << addr << "." << std::dec << std::endl;
+            return;
         }
     }
     unsigned long long aligned_addr = addr & ~(sizeof(long)-1);
@@ -1299,7 +1318,7 @@ void Debugger::delete_breakpoint(int id) {
     auto bp_data_iter = breakpoints_map_.find(addr_to_delete);
     if (bp_data_iter == breakpoints_map_.end()) {
         breakpoint_id_to_addr_.erase(id_iter);
-        std::cout << "** breakpoint " << id << " does not exist (map inconsistent)." << std::endl; 
+        std::cout << "** breakpoint " << id << " does not exist." << std::endl; 
         return;
     }
     unsigned char original_byte_to_restore = bp_data_iter->second;
@@ -1334,7 +1353,7 @@ void Debugger::patch_memory(const std::string& addr_str, const std::string& hex_
     std::vector<unsigned char> bytes_to_write_to_memory;
     for (size_t i = 0; i < hex_values_str.length(); i += 2) {
         std::string byte_hex_str = hex_values_str.substr(i, 2);
-        try {
+        try { // 把input 轉成unsigned char array
             unsigned long byte_val_ul = std::stoul(byte_hex_str, nullptr, 16);
             if (byte_val_ul > 0xFF) {
                 throw std::out_of_range("byte value exceeds 0xFF");
@@ -1355,20 +1374,21 @@ void Debugger::patch_memory(const std::string& addr_str, const std::string& hex_
         unsigned long long last_byte_addr = start_patch_addr + bytes_to_write_to_memory.size() - 1;
         unsigned long long last_byte_aligned_addr = last_byte_addr & ~(sizeof(long)-1);
         errno = 0; 
+        // 確認是否能修改該地址的資料
         peek_text(first_byte_aligned_addr);
         if (errno != 0) { 
             std::cout << "** the target address is not valid." << std::endl; 
             return; 
         }
         if (bytes_to_write_to_memory.size() > 1) {
-             if (last_byte_aligned_addr != first_byte_aligned_addr) {
+            if (last_byte_aligned_addr != first_byte_aligned_addr) {
                 errno = 0; 
                 peek_text(last_byte_aligned_addr);
                 if (errno != 0) { 
                     std::cout << "** the target address is not valid." << std::endl; 
                     return; 
                 }
-             }
+            }
         }
     } 
     else {
@@ -1382,7 +1402,7 @@ void Debugger::patch_memory(const std::string& addr_str, const std::string& hex_
         }
         unsigned long long current_byte_addr_being_patched = start_patch_addr + i;
         unsigned char byte_value_for_patch = bytes_to_write_to_memory[i];
-        if (breakpoints_map_.count(current_byte_addr_being_patched)) {
+        if (breakpoints_map_.count(current_byte_addr_being_patched)) { // 確認是否有改到breakpoint
             breakpoints_map_[current_byte_addr_being_patched] = byte_value_for_patch;
         }
         unsigned long long word_aligned_addr_for_poke = current_byte_addr_being_patched & ~(sizeof(long)-1);
