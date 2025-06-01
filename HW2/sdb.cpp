@@ -480,7 +480,7 @@ void Debugger::parse_elf_and_get_abs_entry(const char* program_file_path) {
                     }
                 }
             } 
-            catch(...) { /* ignore parsing errors */ }
+            catch(...) { /* ignore errors */ }
         }
     }
     if (lowest_map_start_addr_for_exe != (unsigned long long)-1LL) {
@@ -592,14 +592,16 @@ void Debugger::load_program_internal(char** argv_for_exec) {
             return;
         }
         get_registers_from_child();
-        if (regs_.rip != actual_loaded_entry_point_ && actual_loaded_entry_point_ != 0) {
+        // 處理rip不是在entry point的情況 (e.g. dynamic linked ELF)
+        if (regs_.rip != actual_loaded_entry_point_) {
+            // 獲取actual_loaded_entry_point_後的內容
             long original_word_at_target_entry = peek_text(actual_loaded_entry_point_);
             if (errno != 0 && original_word_at_target_entry == -1L) {
                 std::cerr << "** Failed to read memory at calculated program entry point: 0x" << std::hex << actual_loaded_entry_point_ << std::dec << std::endl;
                 kill_program();
                 return;
             }
-            long temp_bp_word_at_target_entry = (original_word_at_target_entry & ~0xFFL) | 0xCC;
+            long temp_bp_word_at_target_entry = (original_word_at_target_entry & ~0xFFL) | 0xCC; // 在entry point的地方設breakpoint
             poke_text(actual_loaded_entry_point_, temp_bp_word_at_target_entry);
             ptrace(PTRACE_CONT, child_pid_, nullptr, nullptr);
             if (waitpid(child_pid_, &status_, 0) < 0) { 
@@ -608,7 +610,7 @@ void Debugger::load_program_internal(char** argv_for_exec) {
                 return;
             }
             if (child_pid_ > 0 && program_loaded_) {
-                poke_text(actual_loaded_entry_point_, original_word_at_target_entry);
+                poke_text(actual_loaded_entry_point_, original_word_at_target_entry); //把原本的內容恢復
             }
             else { 
                 kill_program();
@@ -626,7 +628,7 @@ void Debugger::load_program_internal(char** argv_for_exec) {
                     set_registers_in_child();
                 }
             } 
-            else {
+            else { // child不是因為 SIGTRAP 而停止
                 std::cerr << "** Failed to stop at program entry point after continuing from linker." << std::endl;
                 if (WIFEXITED(status_) || WIFSIGNALED(status_)) {
                     handle_program_termination(); 
